@@ -4,7 +4,7 @@ import path from 'node:path';
 const repoRoot = process.cwd();
 const markdownFiles = [
   'README.md',
-  'packages/messaging/README.md',
+  'packages/jobs/README.md',
   ...collectMarkdownFiles('docs'),
   ...collectMarkdownFiles('website/docs'),
 ];
