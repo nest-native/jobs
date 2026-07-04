@@ -1,0 +1,107 @@
+{
+  "name": "@nest-native/jobs",
+  "version": "0.1.0",
+  "description": "Background jobs for NestJS without Redis — a Drizzle-backed job queue (SQLite, Postgres + MySQL) with transactional enqueue, retries, delayed and unique jobs",
+  "keywords": [
+    "nestjs",
+    "jobs",
+    "background-jobs",
+    "job-queue",
+    "queue",
+    "worker",
+    "task-queue",
+    "delayed-jobs",
+    "drizzle",
+    "sqlite",
+    "postgres",
+    "mysql",
+    "typescript"
+  ],
+  "author": "Rodrigo Nogueira",
+  "license": "MIT",
+  "homepage": "https://github.com/nest-native/jobs#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nest-native/jobs.git",
+    "directory": "packages/jobs"
+  },
+  "bugs": {
+    "url": "https://github.com/nest-native/jobs/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./sqlite": {
+      "types": "./dist/dialects/sqlite/index.d.ts",
+      "require": "./dist/dialects/sqlite/index.js",
+      "default": "./dist/dialects/sqlite/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/dialects/postgres/index.d.ts",
+      "require": "./dist/dialects/postgres/index.js",
+      "default": "./dist/dialects/postgres/index.js"
+    },
+    "./mysql": {
+      "types": "./dist/dialects/mysql/index.d.ts",
+      "require": "./dist/dialects/mysql/index.js",
+      "default": "./dist/dialects/mysql/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "require": "./dist/testing/index.js",
+      "default": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*.d.ts",
+    "dist/**/*.js",
+    "dist/**/*.js.map"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "rimraf dist tsconfig.tsbuildinfo",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@nestjs-cls/transactional": "^3.0.0",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "better-sqlite3": "^11.0.0 || ^12.0.0",
+    "drizzle-orm": "^0.44.0 || ^0.45.0",
+    "mysql2": "^3.0.0",
+    "pg": "^8.0.0",
+    "reflect-metadata": "^0.1.12 || ^0.2.0",
+    "rxjs": "^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.1.27",
+    "@nestjs/core": "^11.1.27",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "typescript": "^6.0.3"
+  }
+}
