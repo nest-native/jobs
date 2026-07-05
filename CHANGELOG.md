@@ -6,6 +6,18 @@ This project follows semantic versioning for the published package. Sample,
 documentation, and CI-only changes may remain unreleased until the next
 package release is useful for users.
 
+## Unreleased
+
+- Local full-mode verification and mutation testing (repo tooling; nothing
+  ships in the package): `compose.yaml` + `npm run infra:up`/`infra:down`
+  start a disposable MySQL container, `npm run test:full` runs the gated
+  MySQL round-trip spec against it, and Stryker mutation testing is available
+  via `npm run test:mutation` (incremental) / `test:mutation:full` with
+  `STRYKER_MUTATE` scoping and `STRYKER_WITH_INFRA=1` for I/O-inclusive runs.
+  All of it is opt-in and local-only — CI is unchanged and never runs
+  mutation testing. See the new "Local Full-Mode Verification" section in
+  GUIDELINES_NEST_JOBS.md.
+
 ## 0.1.0 - 2026-07-04
 
 The first release — background jobs without Redis, in the Drizzle database

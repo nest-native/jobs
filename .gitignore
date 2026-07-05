@@ -22,3 +22,7 @@ todo-*.txt
 announce.txt
 .devcontainer/
 .briefing/
+
+# Mutation testing (local only)
+/.stryker-tmp/
+/reports/
