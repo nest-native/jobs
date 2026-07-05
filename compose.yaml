@@ -1,0 +1,24 @@
+# Optional local infrastructure for the gated MySQL integration spec. Nothing
+# in the default `npm test` path needs this — forks work without Docker, and
+# CI provisions its own MySQL service for the dedicated integration job.
+# See GUIDELINES_NEST_JOBS.md, "Local full-mode verification".
+#
+#   npm run infra:up     start + wait for health
+#   npm run test:full    run the suite with the gated spec enabled
+#   npm run infra:down   remove containers and volumes
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: nest-jobs-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: jobs
+      MYSQL_DATABASE: jobs
+      MYSQL_USER: jobs
+      MYSQL_PASSWORD: jobs
+    ports:
+      - '127.0.0.1:33063:3306'
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-pjobs']
+      interval: 2s
+      timeout: 3s
+      retries: 60

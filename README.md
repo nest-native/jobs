@@ -67,6 +67,30 @@ See the [00-showcase sample](sample/00-showcase) for a runnable end-to-end examp
 
 If you need tens of thousands of jobs per second, sandboxed processors, or a dashboard, use BullMQ — it is excellent at that. If you run Postgres without Nest, pg-boss is battle-tested. This library is for the large middle: NestJS + Drizzle apps that want reliable background jobs **without operating another system**.
 
+## Quality Gates
+
+Every PR runs the full gate — build, typecheck, coverage with `c8` enforced at
+100% for statements, branches, functions, and lines, cognitive complexity
+enforcement (SonarJS threshold `15`), tarball validation, sample version sync,
+and a supply-chain audit:
+
+```bash
+npm run ci
+```
+
+Two **optional, local-only** layers sit on top (neither is required to
+contribute, and forks work without Docker):
+
+- **Full mode** — `npm run infra:up && npm run test:full` runs the gated
+  MySQL round-trip spec against a disposable Docker container
+  (`compose.yaml`); `npm run infra:down` cleans up.
+- **Mutation testing** — `npm run test:mutation` (incremental Stryker run;
+  `test:mutation:full` re-tests everything). Scope with `STRYKER_MUTATE`,
+  include the gated MySQL spec with `STRYKER_WITH_INFRA=1`. Never runs in CI.
+
+Details — including the pre-PR ritual and agent instructions — in
+[GUIDELINES_NEST_JOBS.md](GUIDELINES_NEST_JOBS.md#local-full-mode-verification-optional-infra--mutation-testing).
+
 ## Non-goals (v0.1)
 
 - **Cron / repeatable jobs** — `@nestjs/schedule` already does this well; combine it with `enqueue()` if you want scheduled work to flow through the queue.

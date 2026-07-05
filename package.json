@@ -32,7 +32,15 @@
     "sample:focused": "node scripts/run-focused-samples.mjs",
     "sample": "npm run showcase && npm run sample:focused",
     "ci:sample": "npm run sample",
-    "ci": "npm run typecheck && npm run test:cov && npm run complexity:check && npm run complexity:report && npm run release:check && npm run ci:docs && npm run security:audit && npm run ci:sample"
+    "ci": "npm run typecheck && npm run test:cov && npm run complexity:check && npm run complexity:report && npm run release:check && npm run ci:docs && npm run security:audit && npm run ci:sample",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down -v",
+    "test:full": "npm run test && JOBS_MYSQL_URL=mysql://jobs:jobs@127.0.0.1:33063/jobs npm run test:integration",
+    "test:mutation": "stryker run",
+    "test:mutation:full": "stryker run --force",
+    "test:mutant": "TS_NODE_PROJECT=tsconfig.spec.json node --require ts-node/register --require reflect-metadata --test --test-force-exit packages/jobs/test/*.spec.ts",
+    "test:integration:mutant": "TS_NODE_PROJECT=tsconfig.spec.json node --require ts-node/register --require reflect-metadata --test --test-force-exit packages/jobs/test/integration/*.spec.ts",
+    "test:mutant:full": "npm run test:mutant && JOBS_MYSQL_URL=mysql://jobs:jobs@127.0.0.1:33063/jobs npm run test:integration:mutant"
   },
   "engines": {
     "node": ">=20"
@@ -45,6 +53,7 @@
     "@nestjs/core": "^11.1.27",
     "@nestjs/platform-express": "^11.1.27",
     "@nestjs/testing": "^11.1.27",
+    "@stryker-mutator/core": "^9.6.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.0.0",
     "@types/pg": "^8.11.10",
