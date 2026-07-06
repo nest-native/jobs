@@ -8,6 +8,13 @@ package release is useful for users.
 
 ## Unreleased
 
+- Tests: the worker loop now asserts its core timing contract — a non-empty
+  batch re-ticks immediately (drains the backlog) while an empty batch waits
+  the poll interval. The existing tests checked the reports but not the
+  drain-vs-idle timing, so a mutant inverting that branch survived; the two new
+  timing tests kill it. Docs: reframed the mutation-testing guidance as an
+  occasional, scoped audit (not a per-PR gate) with hand-verification, matching
+  how it is actually used.
 - Local full-mode verification and mutation testing (repo tooling; nothing
   ships in the package): `compose.yaml` + `npm run infra:up`/`infra:down`
   start a disposable MySQL container, `npm run test:full` runs the gated

@@ -118,4 +118,51 @@ describe('runWorkerLoop', () => {
     });
     assert.deepEqual(seen, [{ batchSize: 7 }]);
   });
+
+  test('a non-empty batch loops immediately, without the idle poll wait', async () => {
+    // The whole point of the loop: when a tick claims work it re-ticks at once
+    // to drain the backlog, and only waits when there is nothing to claim.
+    // Three back-to-back claiming ticks finish far inside a 1s interval — a loop
+    // that waited on a non-empty batch (inverting or forcing the sleep branch)
+    // could not.
+    const controller = new AbortController();
+    let calls = 0;
+    const start = Date.now();
+    await runWorkerLoop(
+      fakeClaimer(async () => {
+        calls += 1;
+        if (calls === 3) controller.abort();
+        return report(1);
+      }),
+      { pollIntervalMs: 1_000, signal: controller.signal },
+    );
+    assert.equal(calls, 3);
+    assert.ok(
+      Date.now() - start < 250,
+      'a non-empty batch must not wait the poll interval',
+    );
+  });
+
+  test('an empty batch waits the poll interval between ticks', async () => {
+    // The mirror of the above: with nothing to claim the loop must space ticks
+    // by pollIntervalMs, not spin. Three idle ticks at a 20ms interval take at
+    // least ~40ms of real waiting (two full inter-tick sleeps); a loop that
+    // skipped the wait branch would burn through them in ~0ms.
+    const controller = new AbortController();
+    let calls = 0;
+    const start = Date.now();
+    await runWorkerLoop(
+      fakeClaimer(async () => {
+        calls += 1;
+        if (calls === 3) controller.abort();
+        return report(0);
+      }),
+      { pollIntervalMs: 20, signal: controller.signal },
+    );
+    assert.equal(calls, 3);
+    assert.ok(
+      Date.now() - start >= 35,
+      'an empty batch must wait between ticks',
+    );
+  });
 });

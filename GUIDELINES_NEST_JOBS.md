@@ -110,7 +110,19 @@ package source, and report the result (including the gated spec) in the PR
 body. When Docker is not available, run `npm test` and state that the gated
 spec was skipped. Never wire any of this into CI.
 
-### Mutation testing (Stryker — local only, never in CI)
+### Mutation testing (Stryker — occasional targeted audit, local only, never in CI)
+
+Mutation testing here is an **occasional, targeted audit — not a per-PR gate**.
+Run it deliberately when you've written or reworked non-trivial logic in a file
+and want to know whether its tests actually pin the behavior. It has found real
+gaps (a worker loop that never asserted drain-vs-idle timing; an error mapper
+with no boundary test; unreachable/redundant branches worth deleting) — so it is
+worth doing, occasionally and precisely.
+
+**Run it scoped, never full-package.** The command runner re-runs the whole
+suite per mutant, so a full run is slow to impractical — on this package the
+suite is ~35s/run, enough that even a single-file run times out. Scope to the
+one file you changed and use hand-verification (below):
 
 - `npm run test:mutation` — **incremental** run (cache:
   `reports/stryker-incremental.json`; only re-tests what changed). This is the
@@ -125,6 +137,17 @@ spec was skipped. Never wire any of this into CI.
 - Report: `reports/mutation/mutation.html`. Thresholds are advisory
   (`break: null`) — the signal is *which mutants survive*, not the score.
 
-Pre-PR ritual: run `npm run test:mutation` (scope with `STRYKER_MUTATE` when
-the change is small), look at surviving mutants, and mention the outcome in
-the PR body. Keep CI fast and mutation-free — that is a deliberate contract.
+**Verify a kill without re-running Stryker — the fast path.** Hand-apply the
+exact surviving mutation to the source, run the plain suite (or just the one
+spec), confirm your new test fails, then `git checkout --` to revert. This
+decouples the slow "find survivors" step from a fast "prove the kill" step.
+
+**If a run times out, kill the leftovers first.** A killed Stryker command can
+leave detached test processes that starve the next run — `pgrep -f stryker`,
+`kill -9`, confirm RAM recovered, then retry.
+
+Treat each survivor by the doctrine: add a test that kills it; simplify
+redundant code whose mutant is behaviorally equivalent (with a CHANGELOG note);
+mark a genuine equivalent with `// Stryker disable next-line <Mutator>:
+<reason>`; or, for timing/randomness, assert bounds/progression rather than
+exact values. Keep CI fast and mutation-free — that is a deliberate contract.
