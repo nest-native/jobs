@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   report = await drainJobs(claimer);
   assert.deepEqual(
     report,
-    { claimed: 1, completed: 0, retried: 0, failed: 1 },
+    { scheduled: 0, claimed: 1, completed: 0, retried: 0, failed: 1 },
     'permanent error failed in a single tick',
   );
   const failed = jobById(doomed.id);
