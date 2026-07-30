@@ -21,7 +21,8 @@ Most NestJS apps grow a first background job long before they need a queueing *s
 - **Transactional enqueue** — `enqueue()` inserts the job row *inside your business transaction* (via [`@nestjs-cls/transactional`](https://www.npmjs.com/package/@nestjs-cls/transactional)). The job exists if and only if your writes committed.
 - **Nest-native execution** — declare a class with `@JobHandler('email.welcome')`, register it as a provider, and the claimer dispatches to it with full DI. Handlers are discovered at bootstrap; duplicate names throw at startup.
 - **Retries, delays, priorities, unique jobs** — jittered exponential backoff (or `RetryableError`'s explicit `delayMs`), `PermanentError` to fail fast, `runAt`/`delayMs` scheduling, `priority` ordering, and `uniqueKey` dedup among active jobs.
-- **Zero runtime dependencies** — everything (Nest, Drizzle, your driver) is a peer you already installed.
+- **DB-stored cron schedules** — recurring enqueue driven by a `job_schedules` row: survives restarts, safe across instances (atomic claim), runtime-editable via `JobSchedulesService`. Missed occurrences are skipped (at most one catch-up).
+- **One runtime dependency** — [`croner`](https://www.npmjs.com/package/croner) does the cron math; everything else (Nest, Drizzle, your driver) is a peer you already installed.
 
 ## Install
 
@@ -90,6 +91,34 @@ Delivery is **at-least-once**: a worker crash mid-job means the row is reclaimed
 
 `uniqueKey` means "unique among **active** jobs", identically on all three dialects: a full unique index on `(name, unique_key)`, and terminal transitions (`completed`, `failed`) clear the key. Enqueueing a duplicate `(name, uniqueKey)` while one is pending/processing is a **no-op that returns the existing row**; once that job finishes, the key is free again. Jobs without a `uniqueKey` never collide.
 
+## Cron schedules (0.2+)
+
+Recurring work driven by rows in your database — survives restarts, safe
+across instances (atomic claim), runtime-editable. Opt in by adding the
+`jobSchedules` table to your Drizzle schema and passing a schedule store:
+
+```ts
+JobsModule.forRoot({
+  drizzleInstanceToken: DRIZZLE,
+  store: new SqliteJobStore(),
+  scheduleStore: new SqliteScheduleStore(), // opt-in: omit and nothing changes
+});
+```
+
+```ts
+schedules.upsert({
+  name: 'nightly-report',      // unique identity (upsert key)
+  jobName: 'report.build',     // the @JobHandler each occurrence runs
+  cron: '0 3 * * *',           // croner syntax; timezone: IANA name, default UTC
+  uniqueKey: 'nightly-report', // optional: no overlap pile-up while one runs
+});
+```
+
+Firing is an atomic compare-and-swap plus the occurrence insert in one store
+transaction — exactly one instance wins each occurrence. Missed occurrences
+are skipped (at most one catch-up). An occurrence exhausting its retries
+never touches the schedule. Full details: the Cron Schedules docs page.
+
 ## Honest comparison
 
 | | BullMQ (`@nestjs/bullmq`) | pg-boss | `@nest-native/jobs` |
@@ -99,15 +128,14 @@ Delivery is **at-least-once**: a worker crash mid-job means the row is reclaimed
 | Enqueue in your DB transaction | no (Redis is a second system) | yes (raw SQL in your tx) | yes — first-class, via `@nestjs-cls/transactional` |
 | Delivery | Redis push (blocking ops) | polling + LISTEN/NOTIFY | polling claimer |
 | Throughput | very high | high | right-sized — polling batches, fine for most apps' background work |
-| Repeatable / cron jobs | yes | yes | no (non-goal — use `@nestjs/schedule`) |
+| Repeatable / cron jobs | yes | yes | yes — DB-stored schedules (`JobSchedulesService`) |
 | Dashboards, rate limiting | yes | partial | no |
-| Runtime dependencies | Redis server + client | `pg` | zero (peers you already have) |
+| Runtime dependencies | Redis server + client | `pg` | one — `croner` (the rest are peers you already have) |
 
 If you need tens of thousands of jobs per second, sandboxed processors, or a dashboard, use BullMQ — it is excellent at that. If you run Postgres without Nest, pg-boss is battle-tested. This library is for the large middle: NestJS + Drizzle apps that want reliable background jobs **without operating another system**.
 
-## Non-goals (v0.1)
+## Non-goals (v0.2)
 
-- **Cron / repeatable jobs** — `@nestjs/schedule` already does this well; combine it with `enqueue()` if you want scheduled work to flow through the queue.
 - **Dashboards / UI**, **rate limiting**, **concurrency groups**.
 - **LISTEN/NOTIFY push** — the claimer polls; `pollIntervalMs` is your latency knob.
 - **Redis-class throughput** — this is a polling claimer over your relational DB, by design.

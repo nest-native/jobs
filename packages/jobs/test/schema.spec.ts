@@ -100,3 +100,40 @@ describe('mysql schema', () => {
     assert.equal(column('unique_key')?.notNull, false);
   });
 });
+
+describe('job_schedules schema (all dialects)', () => {
+  const cases = [
+    { dialect: 'sqlite', cfg: () => getSqliteConfig(sqlite.jobSchedules) },
+    { dialect: 'postgres', cfg: () => getPgConfig(postgres.jobSchedules) },
+    { dialect: 'mysql', cfg: () => getMysqlConfig(mysql.jobSchedules) },
+  ] as const;
+
+  for (const { dialect, cfg } of cases) {
+    test(`${dialect}: unique name + due-query index, arming columns nullable`, () => {
+      const config = cfg();
+      assert.equal(config.name, 'job_schedules');
+      const names = config.indexes.map((i) => i.config.name).sort();
+      assert.deepEqual(names, [
+        'job_schedules_enabled_next_run_idx',
+        'job_schedules_name_unique',
+      ]);
+      const unique = config.indexes.find(
+        (i) => i.config.name === 'job_schedules_name_unique',
+      );
+      // Upserts key on the schedule name — it must be uniquely indexed.
+      assert.equal(unique?.config.unique, true);
+      assert.equal(unique?.config.columns.length, 1);
+
+      const column = (name: string) => config.columns.find((c) => c.name === name);
+      assert.equal(column('enabled')?.default, true);
+      assert.equal(column('enabled')?.notNull, true);
+      // A dormant schedule (no future occurrence) has no due time.
+      assert.equal(column('next_run_at')?.notNull, false);
+      assert.equal(column('timezone')?.notNull, false);
+      assert.equal(column('unique_key')?.notNull, false);
+      assert.equal(column('name')?.notNull, true);
+      assert.equal(column('job_name')?.notNull, true);
+      assert.equal(column('cron')?.notNull, true);
+    });
+  }
+});

@@ -1,7 +1,8 @@
 /**
  * Audits the *published* supply-chain surface of `@nest-native/jobs`.
  *
- * The package publishes `"dependencies": {}` (every third-party integration —
+ * The package publishes a single runtime dependency (`croner`); every
+ * third-party integration —
  * `drizzle-orm`, `pg`, `mysql2`, `better-sqlite3`, `@libsql/client`,
  * `@nestjs/swagger`, `class-validator`, etc. — is a peer dependency the consumer
  * brings themselves), so the only third-party code a consumer actually installs

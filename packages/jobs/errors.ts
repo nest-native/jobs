@@ -29,3 +29,17 @@ export class PermanentError extends Error {
     this.name = 'PermanentError';
   }
 }
+
+/**
+ * A cron expression (or its timezone) that croner cannot parse. Thrown by
+ * `JobSchedulesService.upsert`/`setEnabled` at call time — invalid schedules
+ * never reach the table. If a row is corrupted behind the service's back
+ * (hand-edited SQL), the claimer catches this during its tick and disables
+ * the row instead of crashing the loop.
+ */
+export class InvalidScheduleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidScheduleError';
+  }
+}

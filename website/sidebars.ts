@@ -11,6 +11,7 @@ const sidebars: SidebarsConfig = {
       ],
     },
     'api-reference',
+    'cron-schedules',
     'testing',
     'samples',
   ],

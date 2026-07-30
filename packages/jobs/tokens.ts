@@ -12,3 +12,9 @@ export const JOBS_DRIZZLE = Symbol.for('@nest-native/jobs:drizzle');
 
 /** The resolved {@link JobsModuleOptions}. */
 export const JOBS_OPTIONS = Symbol.for('@nest-native/jobs:options');
+
+/**
+ * The dialect-specific {@link ScheduleStore}, or `null` when the module was
+ * configured without one (schedules are opt-in).
+ */
+export const JOBS_SCHEDULE_STORE = Symbol.for('@nest-native/jobs:schedule-store');

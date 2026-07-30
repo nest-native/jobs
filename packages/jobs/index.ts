@@ -6,6 +6,8 @@ export * from './interfaces';
 export * from './tokens';
 export * from './enqueue-input';
 export * from './job-handler.decorator';
+export * from './job-schedules.service';
+export * from './schedule-planner';
 export * from './jobs-handler.explorer';
 export * from './jobs.service';
 export * from './jobs-claimer.service';
