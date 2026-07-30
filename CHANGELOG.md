@@ -8,6 +8,30 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.2.0
+
+- **DB-stored cron schedules** — the django-celery-beat pattern on the
+  existing claimer substrate, and a deliberate reversal of the 0.1 "not a
+  cron scheduler" non-goal (amended in the guidelines first): a
+  `job_schedules` row drives recurring enqueue; survives restarts, safe
+  across instances, runtime-editable via the injectable
+  `JobSchedulesService` (no REST controller, no UI). Firing is an atomic
+  compare-and-swap on `next_run_at` plus the occurrence insert in ONE store
+  transaction on all three dialects. Fixed misfire policy: skip missed
+  occurrences, at most one catch-up. A schedule `uniqueKey` reuses the
+  active-dedup contract as an overlap guard. Occurrence retry exhaustion
+  never touches the schedule row (pinned by test). `TickReport` gains a
+  `scheduled` count.
+- **`croner` becomes the single runtime dependency** (cron parsing,
+  timezones, DST; default timezone UTC) — the "zero runtime dependencies"
+  claim is retired honestly in the README comparison. Everything else stays
+  a peer dependency.
+- New exports: `JobSchedulesService`, `ScheduleStore`/`ScheduleRow` types,
+  `InvalidScheduleError`, `assertValidSchedule`/`nextOccurrence`, per-dialect
+  `jobSchedules` tables + `SqliteScheduleStore`/`PostgresScheduleStore`/
+  `MysqlScheduleStore`. Schedules are strictly opt-in — without a
+  `scheduleStore` the claimer never touches them.
+
 - Tests: the worker loop now asserts its core timing contract — a non-empty
   batch re-ticks immediately (drains the backlog) while an empty batch waits
   the poll interval. The existing tests checked the reports but not the

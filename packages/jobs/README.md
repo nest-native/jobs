@@ -91,6 +91,34 @@ Delivery is **at-least-once**: a worker crash mid-job means the row is reclaimed
 
 `uniqueKey` means "unique among **active** jobs", identically on all three dialects: a full unique index on `(name, unique_key)`, and terminal transitions (`completed`, `failed`) clear the key. Enqueueing a duplicate `(name, uniqueKey)` while one is pending/processing is a **no-op that returns the existing row**; once that job finishes, the key is free again. Jobs without a `uniqueKey` never collide.
 
+## Cron schedules (0.2+)
+
+Recurring work driven by rows in your database — survives restarts, safe
+across instances (atomic claim), runtime-editable. Opt in by adding the
+`jobSchedules` table to your Drizzle schema and passing a schedule store:
+
+```ts
+JobsModule.forRoot({
+  drizzleInstanceToken: DRIZZLE,
+  store: new SqliteJobStore(),
+  scheduleStore: new SqliteScheduleStore(), // opt-in: omit and nothing changes
+});
+```
+
+```ts
+schedules.upsert({
+  name: 'nightly-report',      // unique identity (upsert key)
+  jobName: 'report.build',     // the @JobHandler each occurrence runs
+  cron: '0 3 * * *',           // croner syntax; timezone: IANA name, default UTC
+  uniqueKey: 'nightly-report', // optional: no overlap pile-up while one runs
+});
+```
+
+Firing is an atomic compare-and-swap plus the occurrence insert in one store
+transaction — exactly one instance wins each occurrence. Missed occurrences
+are skipped (at most one catch-up). An occurrence exhausting its retries
+never touches the schedule. Full details: the Cron Schedules docs page.
+
 ## Honest comparison
 
 | | BullMQ (`@nestjs/bullmq`) | pg-boss | `@nest-native/jobs` |

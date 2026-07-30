@@ -53,6 +53,34 @@ npm install drizzle-orm @nestjs-cls/transactional better-sqlite3   # or pg / mys
 
 See the [00-showcase sample](sample/00-showcase) for a runnable end-to-end example on SQLite, and the [documentation](https://nest-native.dev/jobs/) for the full guide.
 
+## Cron schedules (0.2+)
+
+Recurring work driven by rows in your database — survives restarts, safe
+across instances (atomic claim), runtime-editable. Opt in by adding the
+`jobSchedules` table to your Drizzle schema and passing a schedule store:
+
+```ts
+JobsModule.forRoot({
+  drizzleInstanceToken: DRIZZLE,
+  store: new SqliteJobStore(),
+  scheduleStore: new SqliteScheduleStore(), // opt-in: omit and nothing changes
+});
+```
+
+```ts
+schedules.upsert({
+  name: 'nightly-report',      // unique identity (upsert key)
+  jobName: 'report.build',     // the @JobHandler each occurrence runs
+  cron: '0 3 * * *',           // croner syntax; timezone: IANA name, default UTC
+  uniqueKey: 'nightly-report', // optional: no overlap pile-up while one runs
+});
+```
+
+Firing is an atomic compare-and-swap plus the occurrence insert in one store
+transaction — exactly one instance wins each occurrence. Missed occurrences
+are skipped (at most one catch-up). An occurrence exhausting its retries
+never touches the schedule. Full details: the Cron Schedules docs page.
+
 ## Honest comparison
 
 | | BullMQ (`@nestjs/bullmq`) | pg-boss | `@nest-native/jobs` |

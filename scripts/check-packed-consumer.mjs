@@ -156,12 +156,14 @@ for (const subpath of ['./sqlite', './postgres', './mysql', './testing']) {
   assert.ok(packageJson.exports[subpath], 'missing subpath export: ' + subpath);
 }
 
-// The published package declares zero runtime dependencies (consumers only pull
-// the peers they actually use).
-assert.equal(
-  Object.keys(packageJson.dependencies ?? {}).length,
-  0,
-  'The packed package must not declare runtime dependencies.',
+// The published package declares EXACTLY ONE runtime dependency: croner (cron
+// math for schedules — see the guidelines' constitution amendment). Consumers
+// only pull the peers they actually use beyond that. Adding a second runtime
+// dependency requires the same amendment ceremony.
+assert.deepEqual(
+  Object.keys(packageJson.dependencies ?? {}),
+  ['croner'],
+  'The packed package must declare exactly one runtime dependency: croner.',
 );
 
 // Functional smoke, DB-free: the recording handler captures executions, the
@@ -181,13 +183,13 @@ assert.equal(
   );
 
   const reports = [
-    { claimed: 2, completed: 1, retried: 1, failed: 0 },
-    { claimed: 1, completed: 1, retried: 0, failed: 0 },
-    { claimed: 0, completed: 0, retried: 0, failed: 0 },
+    { scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0 },
+    { scheduled: 1, claimed: 1, completed: 1, retried: 0, failed: 0 },
+    { scheduled: 0, claimed: 0, completed: 0, retried: 0, failed: 0 },
   ];
   const fakeClaimer = { tick: async () => reports.shift() };
   const total = await testing.drainJobs(fakeClaimer);
-  assert.deepEqual(total, { claimed: 3, completed: 2, retried: 1, failed: 0 });
+  assert.deepEqual(total, { scheduled: 1, claimed: 3, completed: 2, retried: 1, failed: 0 });
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;
