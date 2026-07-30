@@ -21,7 +21,8 @@ Most NestJS apps grow a first background job long before they need a queueing *s
 - **Transactional enqueue** — `enqueue()` inserts the job row *inside your business transaction* (via [`@nestjs-cls/transactional`](https://www.npmjs.com/package/@nestjs-cls/transactional)). The job exists if and only if your writes committed.
 - **Nest-native execution** — declare a class with `@JobHandler('email.welcome')`, register it as a provider, and the claimer dispatches to it with full DI. Handlers are discovered at bootstrap; duplicate names throw at startup.
 - **Retries, delays, priorities, unique jobs** — jittered exponential backoff (or `RetryableError`'s explicit `delayMs`), `PermanentError` to fail fast, `runAt`/`delayMs` scheduling, `priority` ordering, and `uniqueKey` dedup among active jobs.
-- **Zero runtime dependencies** — everything (Nest, Drizzle, your driver) is a peer you already installed.
+- **DB-stored cron schedules** — recurring enqueue driven by a `job_schedules` row: survives restarts, safe across instances (atomic claim), runtime-editable via `JobSchedulesService`. Missed occurrences are skipped (at most one catch-up).
+- **One runtime dependency** — [`croner`](https://www.npmjs.com/package/croner) does the cron math; everything else (Nest, Drizzle, your driver) is a peer you already installed.
 
 ## Install
 
@@ -99,15 +100,14 @@ Delivery is **at-least-once**: a worker crash mid-job means the row is reclaimed
 | Enqueue in your DB transaction | no (Redis is a second system) | yes (raw SQL in your tx) | yes — first-class, via `@nestjs-cls/transactional` |
 | Delivery | Redis push (blocking ops) | polling + LISTEN/NOTIFY | polling claimer |
 | Throughput | very high | high | right-sized — polling batches, fine for most apps' background work |
-| Repeatable / cron jobs | yes | yes | no (non-goal — use `@nestjs/schedule`) |
+| Repeatable / cron jobs | yes | yes | yes — DB-stored schedules (`JobSchedulesService`) |
 | Dashboards, rate limiting | yes | partial | no |
-| Runtime dependencies | Redis server + client | `pg` | zero (peers you already have) |
+| Runtime dependencies | Redis server + client | `pg` | one — `croner` (the rest are peers you already have) |
 
 If you need tens of thousands of jobs per second, sandboxed processors, or a dashboard, use BullMQ — it is excellent at that. If you run Postgres without Nest, pg-boss is battle-tested. This library is for the large middle: NestJS + Drizzle apps that want reliable background jobs **without operating another system**.
 
-## Non-goals (v0.1)
+## Non-goals (v0.2)
 
-- **Cron / repeatable jobs** — `@nestjs/schedule` already does this well; combine it with `enqueue()` if you want scheduled work to flow through the queue.
 - **Dashboards / UI**, **rate limiting**, **concurrency groups**.
 - **LISTEN/NOTIFY push** — the claimer polls; `pollIntervalMs` is your latency knob.
 - **Redis-class throughput** — this is a polling claimer over your relational DB, by design.

@@ -4,8 +4,11 @@
 `@nest-native/jobs` implements **background jobs in the database you already
 have**, nothing more. It is decorator-first, DI-first, and integrates with
 `@nestjs-cls/transactional` so the enqueue shares the user's business
-transaction. It is **not** a BullMQ replacement, a cron scheduler, or a
-distributed workflow engine.
+transaction. It is **not** a BullMQ replacement or a distributed workflow
+engine. **DB-stored cron schedules are in scope since 0.2.0** — a deliberate
+reversal of the 0.1 "not a cron scheduler" non-goal: schedules live in a table,
+survive restarts, and are runtime-editable, which in-memory `@nestjs/schedule`
+timers cannot give a multi-instance deployment.
 
 ### 1. Architecture assumptions (never break these)
 - **Dialect-agnostic core, dialect-specific stores.** The engine (`JobsService`
@@ -25,6 +28,17 @@ distributed workflow engine.
   among active jobs" holds everywhere without partial indexes, and a duplicate
   enqueue returns the existing active row (dedup no-op). Never let a dialect
   diverge from this semantic.
+- **Schedules ride the same machinery.** The `job_schedules` table is drained
+  inside the claimer's tick: a due schedule is claimed with an **atomic
+  compare-and-swap on `next_run_at`**, and the occurrence job is inserted **in
+  the same store transaction** — exactly-once occurrence handoff on every
+  dialect, then normal at-least-once job delivery. Misfire policy (fixed, v1):
+  **skip missed occurrences, at most one catch-up** — `next_run_at` always
+  advances from *now*, never replayed from the past; enabling a long-disabled
+  schedule recomputes from now instead of bursting. Cron parsing, timezones,
+  and DST semantics live in **croner** (never hand-roll cron math; default
+  timezone is UTC). A schedule row is the source of truth: job outcomes —
+  including retry exhaustion of an occurrence — never touch it.
 - **Polling claimer, not push.** Delivery is a poll loop with batch claiming,
   priority + due-time ordering, and stuck-job reclaim. LISTEN/NOTIFY-style push
   is out of scope for the 0.x line.
@@ -41,14 +55,26 @@ distributed workflow engine.
   bootstrap, duplicate names throw at startup.
 - `JobsClaimer.tick()` + the `runWorkerLoop` helper; `RetryableError` /
   `PermanentError` drive the retry vocabulary.
-- Exported per-dialect `jobs` table definitions; consumers add them to their
-  schema and generate migrations with drizzle-kit.
+- `JobSchedulesService` — injectable CRUD (`upsert` / `get` / `list` /
+  `setEnabled` / `remove`) for DB-stored cron schedules; **no REST controller,
+  no admin UI** (feed it from your own endpoints). Occurrences enqueue with the
+  schedule's `jobName`, `payload`, and optional `maxAttempts` / `priority` /
+  `uniqueKey` — a `uniqueKey` makes an occurrence a dedup no-op while the
+  previous one is still active (the overlap guard, reusing the existing
+  uniqueKey contract verbatim).
+- `JobsModule.forRoot({ scheduleStore })` opts schedules in; **without it the
+  claimer never touches schedules and 0.1 behavior is byte-identical**.
+- Exported per-dialect `jobs` + `jobSchedules` table definitions; consumers add
+  them to their schema and generate migrations with drizzle-kit.
 - Subpaths: `.` (core), `./sqlite`, `./postgres`, `./mysql`, `./testing`.
 
 ### 3. Implementation rules
-- The published `packages/jobs/package.json` keeps an explicit empty
-  `"dependencies": {}` block; runtime integrations are `peerDependencies`
-  (`better-sqlite3`, `pg`, `mysql2` optional).
+- The published `packages/jobs/package.json` keeps **exactly one runtime
+  dependency: `croner`** (cron parsing / next-occurrence math — hand-rolling
+  cron is forbidden). Everything else stays a `peerDependency`
+  (`better-sqlite3`, `pg`, `mysql2` optional). Never add a second runtime
+  dependency without the same constitution-amendment ceremony that added this
+  one.
 - **Handler rule:** handlers run in the claimer's poll loop, OUTSIDE any
   business transaction. Delivery is at-least-once — a handler must be
   idempotent or key its side effects on `ctx.jobId`. Document this on every
@@ -70,8 +96,8 @@ distributed workflow engine.
 - Every PR includes an explicit supply-chain + application-security pass.
 - **Audit scope.** The `security:audit` release gate audits the *published*
   surface — `audit-production-surface.mjs` packs the tarball and audits its
-  production closure. Since the package publishes `"dependencies": {}`, this is
-  exactly what consumers install. Advisories confined to dev/peer/build tooling
+  production closure. The production closure is the package plus `croner`;
+  that is exactly what consumers install. Advisories confined to dev/peer/build tooling
   or the docs `website/` are tracked by Dependabot but do not block releases.
 - **Strictness scope.** The non-negotiables (100% coverage, complexity ≤ 15,
   zero published runtime deps, isolated major-version review) govern the *core*
