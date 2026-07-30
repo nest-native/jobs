@@ -18,7 +18,9 @@ npm install @nest-native/jobs
 npm install drizzle-orm @nestjs-cls/transactional @nestjs-cls/transactional-adapter-drizzle-orm nestjs-cls better-sqlite3
 ```
 
-The published package declares **zero runtime dependencies** — Nest, Drizzle,
+The published package declares a single runtime dependency —
+[`croner`](https://www.npmjs.com/package/croner), which does the cron math for
+schedules. Nest, Drizzle,
 and your driver are peer dependencies you already control.
 
 ## 2. Add the `jobs` table to your schema

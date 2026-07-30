@@ -17,6 +17,7 @@ JobsModule.forRoot(options: JobsModuleOptions): DynamicModule
 interface JobsModuleOptions {
   drizzleInstanceToken: symbol | string; // the base (non-transactional) Drizzle instance
   store: JobStore;                       // the dialect store
+  scheduleStore?: ScheduleStore;         // opt-in: DB-stored cron schedules (0.2+)
   imports?: ModuleMetadata['imports'];   // modules exporting the token (if not global)
   isGlobal?: boolean;                    // default: true
 }
@@ -35,11 +36,15 @@ interface JobsModuleAsyncOptions {
   imports?: ModuleMetadata['imports'];
   inject?: (InjectionToken | OptionalFactoryDependency)[];
   useStore: (...args: any[]) => JobStore | Promise<JobStore>;
+  // Optional schedules opt-in; shares `inject` with `useStore`.
+  useScheduleStore?: (...args: any[]) => ScheduleStore | Promise<ScheduleStore>;
 }
 ```
 
-Both register and export `JobsService`, `JobsClaimer`, and
-`JobsHandlerExplorer` (plus Nest's `DiscoveryModule` internally).
+Both register and export `JobsService`, `JobSchedulesService`, `JobsClaimer`,
+and `JobsHandlerExplorer` (plus Nest's `DiscoveryModule` internally). Without
+a schedule store, `JobSchedulesService` throws on use and the claimer never
+touches schedules.
 
 ## JobsService (enqueue)
 
@@ -132,7 +137,13 @@ class JobsClaimer {
   tick(overrides?: RunnerConfig): Promise<TickReport>;
 }
 
-interface TickReport { claimed: number; completed: number; retried: number; failed: number }
+interface TickReport {
+  scheduled: number; // schedule occurrences THIS tick enqueued (0.2+)
+  claimed: number;
+  completed: number;
+  retried: number;
+  failed: number;
+}
 
 interface ResolvedRunnerConfig {
   workerInstanceId: string; // default `${hostname()}-${pid}`
@@ -209,9 +220,53 @@ interface JobRow {
 }
 ```
 
+## JobSchedulesService + the ScheduleStore seam (0.2+)
+
+```ts
+class JobSchedulesService<TStore extends ScheduleStore = ScheduleStore> {
+  upsert<TPayload extends object>(input: UpsertScheduleInput<TPayload>): ReturnType<TStore['upsert']>;
+  get(name: string): Promise<ScheduleRow | undefined>;
+  list(): Promise<ScheduleRow[]>;
+  remove(name: string): Promise<boolean>;
+  setEnabled(name: string, enabled: boolean): Promise<ScheduleRow | undefined>;
+}
+```
+
+Injectable CRUD for schedules — no REST controller, no UI. `upsert` returns
+the store's native shape (synchronous on sqlite) and validates the cron —
+including rejecting expressions with **no future occurrence** — with
+`InvalidScheduleError`. Boot-time upserts are safe by design: on an existing
+row, an omitted `enabled` preserves the stored flag (an ops
+`setEnabled(name, false)` survives redeploys) and the stored `next_run_at`
+is preserved while `cron`/`timezone` are unchanged (a pending catch-up
+survives restarts). See the [Cron Schedules](./cron-schedules.md) page for
+semantics (misfire policy, overlap guard, failure isolation).
+
+```ts
+interface ScheduleStore {
+  upsert(db, input: ResolvedScheduleUpsert): ScheduleRow | Promise<ScheduleRow>;
+  get(db, name): Promise<ScheduleRow | undefined>;
+  list(db): Promise<ScheduleRow[]>;
+  remove(db, name): Promise<boolean>;
+  setEnabled(db, name, enabled, nextRunAt, expectedUpdatedAt?): Promise<ScheduleRow | undefined>;
+  listDue(db, nowIso, limit): Promise<ScheduleRow[]>;
+  claimAndEnqueue(db, claim: ScheduleClaim): Promise<ScheduleClaimResult>;
+  disable(db, id, lastError): Promise<void>;
+}
+```
+
+Dialect implementations ship as `SqliteScheduleStore` / `PostgresScheduleStore`
+/ `MysqlScheduleStore` next to their `jobSchedules` table definitions.
+`claimAndEnqueue` is the exactly-once occurrence handoff: an atomic
+compare-and-swap on `next_run_at` plus the occurrence insert in ONE store
+transaction. The planner helpers `nextOccurrence(cron, timezone, after)` and
+`armSchedule(cron, timezone, after)` (throws instead of returning null) are
+exported too.
+
 ## Tokens & helpers
 
-- `JOBS_STORE`, `JOBS_DRIZZLE`, `JOBS_OPTIONS` — the module's DI tokens.
+- `JOBS_STORE`, `JOBS_DRIZZLE`, `JOBS_OPTIONS`, `JOBS_SCHEDULE_STORE` — the
+  module's DI tokens.
 - `DEFAULT_RUNNER_CONFIG` — the resolved defaults `tick()` merges overrides into.
 - `resolveAvailableAt({ runAt?, delayMs? }): Date` — the shared scheduling
   resolution (throws when both are set); every store funnels through it.

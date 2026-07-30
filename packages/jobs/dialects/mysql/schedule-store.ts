@@ -8,6 +8,7 @@ import type {
   ScheduleRow,
   ScheduleStore,
 } from '../../interfaces';
+import { isMysqlUniqueViolation } from './job-store';
 import { jobs, jobSchedules } from './schema';
 
 type Db = MySql2Database<Record<string, never>>;
@@ -25,40 +26,77 @@ type Db = MySql2Database<Record<string, never>>;
  * Whether the insert happened is detected by reading our generated id back.
  */
 export class MysqlScheduleStore implements ScheduleStore {
+  /**
+   * MySQL cannot express the preservation rules atomically: ON DUPLICATE KEY
+   * UPDATE evaluates assignments left-to-right with later references seeing
+   * already-updated columns, and Drizzle controls the emission order — a CASE
+   * reading the stored cron is silently defeated (caught by the gated
+   * real-MySQL test). So the mysql upsert is an explicit read-then-write:
+   * insert when absent (recovering from a lost first-upsert race via the
+   * ER_DUP_ENTRY dedup), otherwise compute the preserved values in JS and
+   * UPDATE. The admin-time read-modify-write race this leaves is benign —
+   * last writer wins with internally-consistent values.
+   */
   async upsert(db: unknown, input: ResolvedScheduleUpsert): Promise<ScheduleRow> {
     const nowIso = new Date().toISOString();
+    let existing = await this.get(db, input.name);
+    if (!existing) {
+      const inserted = await this.tryInsert(db, input, nowIso);
+      if (inserted) {
+        return inserted;
+      }
+      // Lost a concurrent first-upsert race: the row exists now — update it.
+      existing = (await this.get(db, input.name)) as ScheduleRow;
+    }
+    // Boot-safe preservations: an omitted `enabled` keeps the stored flag,
+    // and the stored `next_run_at` survives while cron/timezone are unchanged
+    // (a pending catch-up is not skipped; the rhythm is not perturbed).
+    const preserveNextRunAt =
+      existing.cron === input.cron &&
+      existing.timezone === input.timezone &&
+      existing.nextRunAt !== null;
     await (db as Db)
-      .insert(jobSchedules)
-      .values({
+      .update(jobSchedules)
+      .set({
+        jobName: input.jobName,
+        payload: input.payload,
+        cron: input.cron,
+        timezone: input.timezone,
+        enabled: input.enabled ?? existing.enabled,
+        nextRunAt: preserveNextRunAt ? existing.nextRunAt : input.nextRunAt,
+        maxAttempts: input.maxAttempts,
+        priority: input.priority,
+        uniqueKey: input.uniqueKey,
+        lastError: null,
+        updatedAt: nowIso,
+      })
+      .where(eq(jobSchedules.name, input.name));
+    return (await this.get(db, input.name)) as ScheduleRow;
+  }
+
+  /** The insert leg of upsert; undefined when a concurrent upsert won the name. */
+  private async tryInsert(
+    db: unknown,
+    input: ResolvedScheduleUpsert,
+    nowIso: string,
+  ): Promise<ScheduleRow | undefined> {
+    try {
+      await (db as Db).insert(jobSchedules).values({
         id: randomUUID(),
         ...input,
+        enabled: input.enabled ?? true,
         lastEnqueuedAt: null,
         lastError: null,
         createdAt: nowIso,
         updatedAt: nowIso,
-      })
-      .onDuplicateKeyUpdate({
-        // Updates keep id / createdAt / lastEnqueuedAt; a successful upsert
-        // clears any stale claim-time error.
-        set: {
-          jobName: input.jobName,
-          payload: input.payload,
-          cron: input.cron,
-          timezone: input.timezone,
-          enabled: input.enabled,
-          nextRunAt: input.nextRunAt,
-          maxAttempts: input.maxAttempts,
-          priority: input.priority,
-          uniqueKey: input.uniqueKey,
-          lastError: null,
-          updatedAt: nowIso,
-        },
       });
-    const [row] = await (db as Db)
-      .select()
-      .from(jobSchedules)
-      .where(eq(jobSchedules.name, input.name));
-    return row;
+    } catch (error) {
+      if (!isMysqlUniqueViolation(error)) {
+        throw error;
+      }
+      return undefined;
+    }
+    return this.get(db, input.name);
   }
 
   async get(db: unknown, name: string): Promise<ScheduleRow | undefined> {
@@ -88,11 +126,25 @@ export class MysqlScheduleStore implements ScheduleStore {
     name: string,
     enabled: boolean,
     nextRunAt: string | null,
+    expectedUpdatedAt?: string,
   ): Promise<ScheduleRow | undefined> {
-    await (db as Db)
+    const [result] = await (db as Db)
       .update(jobSchedules)
       .set({ enabled, nextRunAt, updatedAt: new Date().toISOString() })
-      .where(eq(jobSchedules.name, name));
+      .where(
+        and(
+          eq(jobSchedules.name, name),
+          // Optimistic guard: only write over the row version the caller read.
+          ...(expectedUpdatedAt === undefined
+            ? []
+            : [eq(jobSchedules.updatedAt, expectedUpdatedAt)]),
+        ),
+      );
+    // No RETURNING on MySQL: a zero-row update (unknown name OR guard miss)
+    // must NOT read back the untouched row as if it were updated.
+    if (result.affectedRows === 0) {
+      return undefined;
+    }
     return this.get(db, name);
   }
 

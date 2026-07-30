@@ -106,22 +106,37 @@ export class JobsClaimer {
   }
 
   private async fireSchedule(schedule: ScheduleRow, now: Date): Promise<number> {
+    let nextRunAt: string | null;
+    try {
+      nextRunAt = nextOccurrence(schedule.cron, schedule.timezone, now);
+    } catch (error) {
+      // Only InvalidScheduleError (an Error subclass) escapes nextOccurrence —
+      // the hand-corrupted row case. THAT alone disables a schedule.
+      const message = (error as Error).message;
+      this.logger.warn(
+        `schedule ${schedule.id} ("${schedule.name}") disabled: ${message}`,
+      );
+      await this.scheduleStore!.disable(this.db, schedule.id, message);
+      return 0;
+    }
     try {
       const result = await this.scheduleStore!.claimAndEnqueue(this.db, {
         id: schedule.id,
         // listDue only returns rows with a non-null nextRunAt.
         expectedNextRunAt: schedule.nextRunAt as string,
-        nextRunAt: nextOccurrence(schedule.cron, schedule.timezone, now),
+        nextRunAt,
         nowIso: now.toISOString(),
         input: occurrenceInput(schedule),
       });
       return result.claimed ? 1 : 0;
     } catch (error) {
+      // A transient store error (connection drop, lock timeout, serialization
+      // failure) must NOT kill the schedule: nothing was written, the row is
+      // still due, and the next tick retries it naturally.
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
-        `schedule ${schedule.id} ("${schedule.name}") disabled: ${message}`,
+        `schedule ${schedule.id} ("${schedule.name}") claim failed, will retry next tick: ${message}`,
       );
-      await this.scheduleStore!.disable(this.db, schedule.id, message);
       return 0;
     }
   }

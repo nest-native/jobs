@@ -159,11 +159,16 @@ export interface UpsertScheduleInput<
   /** The `@JobHandler` name each occurrence enqueues. */
   jobName: string;
   payload?: TPayload;
-  /** Cron expression (croner syntax); validated at call time. */
+  /** Cron expression (croner syntax); validated at call time — expressions with no future occurrence are rejected. */
   cron: string;
   /** IANA timezone (default UTC). */
   timezone?: string;
-  /** Default true. */
+  /**
+   * OMITTING this is not the same as `true`: an omitted `enabled` defaults to
+   * true on INSERT but PRESERVES the stored value on update — so a boot-time
+   * upsert never resurrects a schedule that ops disabled at runtime with
+   * `setEnabled(name, false)`.
+   */
   enabled?: boolean;
   maxAttempts?: number;
   priority?: number;
@@ -178,8 +183,15 @@ export interface ResolvedScheduleUpsert {
   payload: Record<string, unknown>;
   cron: string;
   timezone: string | null;
-  enabled: boolean;
-  nextRunAt: string | null;
+  /** `null` = the caller omitted it: default true on insert, PRESERVE the stored value on update. */
+  enabled: boolean | null;
+  /**
+   * The freshly-armed due time. On a conflict-update the store only applies
+   * it when `cron`/`timezone` changed or the stored `nextRunAt` is null —
+   * otherwise the stored due time is preserved, so a redeploy's boot upsert
+   * neither skips a pending catch-up nor perturbs the rhythm.
+   */
+  nextRunAt: string;
   maxAttempts: number | null;
   priority: number | null;
   uniqueKey: string | null;
@@ -232,12 +244,18 @@ export interface ScheduleStore {
   list(db: unknown): Promise<ScheduleRow[]>;
   /** Resolves true when a row was deleted. */
   remove(db: unknown, name: string): Promise<boolean>;
-  /** Flips `enabled` and overwrites `nextRunAt`; resolves the updated row (undefined when the name is unknown). */
+  /**
+   * Flips `enabled` and overwrites `nextRunAt`; resolves the updated row, or
+   * undefined when the name is unknown OR `expectedUpdatedAt` was supplied
+   * and no longer matches (optimistic-concurrency guard — the caller re-reads
+   * and retries).
+   */
   setEnabled(
     db: unknown,
     name: string,
     enabled: boolean,
     nextRunAt: string | null,
+    expectedUpdatedAt?: string,
   ): Promise<ScheduleRow | undefined>;
   /** Enabled rows with a non-null `nextRunAt <= nowIso`, oldest due first. */
   listDue(db: unknown, nowIso: string, limit: number): Promise<ScheduleRow[]>;

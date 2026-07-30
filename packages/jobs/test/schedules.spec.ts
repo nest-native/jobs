@@ -10,7 +10,7 @@ import type { JobHandler as JobHandlerContract } from '../job-handler.decorator'
 import { JobSchedulesService } from '../job-schedules.service';
 import { DEFAULT_RUNNER_CONFIG, JobsClaimer } from '../jobs-claimer.service';
 import type { JobsHandlerExplorer } from '../jobs-handler.explorer';
-import { assertValidSchedule, nextOccurrence } from '../schedule-planner';
+import { armSchedule, nextOccurrence } from '../schedule-planner';
 import {
   jobs,
   jobSchedules,
@@ -94,7 +94,7 @@ describe('schedule planner', () => {
 
   test('invalid pattern throws InvalidScheduleError (no timezone in message)', () => {
     assert.throws(
-      () => assertValidSchedule('not-a-cron'),
+      () => armSchedule('not-a-cron', null, new Date()),
       (error: unknown) =>
         error instanceof InvalidScheduleError &&
         error.message.includes('"not-a-cron"') &&
@@ -104,15 +104,25 @@ describe('schedule planner', () => {
 
   test('invalid timezone throws InvalidScheduleError naming the timezone', () => {
     assert.throws(
-      () => assertValidSchedule('0 0 * * *', 'Not/AZone'),
+      () => armSchedule('0 0 * * *', 'Not/AZone', new Date()),
       (error: unknown) =>
         error instanceof InvalidScheduleError &&
         error.message.includes('timezone "Not/AZone"'),
     );
   });
 
-  test('assertValidSchedule accepts a valid pattern + timezone', () => {
-    assertValidSchedule('*/5 * * * *', 'America/Sao_Paulo');
+  test('armSchedule returns the ISO occurrence for a valid pattern + timezone', () => {
+    const next = armSchedule('*/5 * * * *', 'America/Sao_Paulo', new Date());
+    assert.ok(next > new Date(Date.now() - 1000).toISOString());
+  });
+
+  test('armSchedule rejects an expression with no future occurrence', () => {
+    assert.throws(
+      () => armSchedule('0 0 30 2 *', null, new Date()),
+      (error: unknown) =>
+        error instanceof InvalidScheduleError &&
+        error.message.includes('no future occurrence'),
+    );
   });
 });
 
@@ -182,6 +192,16 @@ describe('SqliteScheduleStore CRUD', () => {
     service().upsert({ name: 's', jobName: 'a', cron: '0 3 * * *' });
     assert.equal(await service().remove('s'), true);
     assert.equal(await service().remove('s'), false);
+  });
+
+  test('setEnabled honours the optimistic updatedAt guard', async () => {
+    service().upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    const row = scheduleByName('s');
+    const stale = await store.setEnabled(db, 's', false, null, '1999-01-01T00:00:00.000Z');
+    assert.equal(stale, undefined);
+    assert.equal(scheduleByName('s').enabled, true, 'guarded write must not apply');
+    const fresh = await store.setEnabled(db, 's', false, null, row.updatedAt);
+    assert.equal(fresh?.enabled, false);
   });
 
   test('listDue returns only enabled, armed, due rows — oldest first, limited', async () => {
@@ -316,10 +336,46 @@ describe('JobSchedulesService', () => {
     assert.equal(db.select().from(jobSchedules).all().length, 0);
   });
 
-  test('upsert with an impossible cron arms a dormant schedule (null nextRunAt)', () => {
-    const row = service().upsert({ name: 's', jobName: 'j', cron: '0 0 30 2 *' });
-    assert.equal(row.nextRunAt, null);
-    assert.equal(row.enabled, true);
+  test('upsert rejects an expression with no future occurrence', () => {
+    assert.throws(
+      () => service().upsert({ name: 's', jobName: 'j', cron: '0 0 30 2 *' }),
+      InvalidScheduleError,
+    );
+    assert.equal(db.select().from(jobSchedules).all().length, 0);
+  });
+
+  test('boot upsert with omitted enabled NEVER resurrects an ops-disabled schedule', async () => {
+    const svc = service();
+    svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    await svc.setEnabled('s', false); // the ops kill switch
+    // The documented boot-time upsert (enabled omitted) runs on redeploy:
+    const after = svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    assert.equal(after.enabled, false);
+  });
+
+  test('boot upsert preserves a pending catch-up while cron is unchanged', () => {
+    const svc = service();
+    svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    rewind('s'); // the schedule became due during downtime
+    const after = svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    assert.equal(after.nextRunAt, PAST); // still due — the catch-up survives
+  });
+
+  test('changing the cron re-arms nextRunAt from now', () => {
+    const svc = service();
+    svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    rewind('s');
+    const after = svc.upsert({ name: 's', jobName: 'j', cron: '30 4 * * *' });
+    assert.ok((after.nextRunAt as string) > new Date().toISOString());
+  });
+
+  test('explicit enabled: true on a disabled schedule re-arms it', async () => {
+    const svc = service();
+    svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    await svc.setEnabled('s', false); // nextRunAt cleared to null
+    const after = svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *', enabled: true });
+    assert.equal(after.enabled, true);
+    assert.ok(after.nextRunAt !== null); // stored null → freshly armed
   });
 
   test('setEnabled(false) clears nextRunAt; setEnabled(true) re-arms from now', async () => {
@@ -345,6 +401,35 @@ describe('JobSchedulesService', () => {
     svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
     db.update(jobSchedules).set({ cron: 'garbage' }).where(eq(jobSchedules.name, 's')).run();
     await assert.rejects(svc.setEnabled('s', true), InvalidScheduleError);
+  });
+
+  test('setEnabled(true) retries when the optimistic guard misses, then succeeds', async () => {
+    service().upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    let misses = 2;
+    const guarded = {
+      get: (d: unknown, n: string) => store.get(d, n),
+      setEnabled: (d: unknown, n: string, e: boolean, next: string | null, exp?: string) => {
+        if (misses > 0) {
+          misses -= 1;
+          return Promise.resolve(undefined); // guard miss: concurrent writer
+        }
+        return store.setEnabled(d, n, e, next, exp);
+      },
+    } as unknown as ScheduleStore;
+    const svc = new JobSchedulesService(db, guarded);
+    const row = await svc.setEnabled('s', true);
+    assert.equal(row?.enabled, true);
+    assert.equal(misses, 0);
+  });
+
+  test('setEnabled(true) gives up after persistent guard misses', async () => {
+    service().upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    const contended = {
+      get: (d: unknown, n: string) => store.get(d, n),
+      setEnabled: () => Promise.resolve(undefined),
+    } as unknown as ScheduleStore;
+    const svc = new JobSchedulesService(db, contended);
+    await assert.rejects(svc.setEnabled('s', true), /modified concurrently/);
   });
 
   test('every method throws a configuration error without a scheduleStore', async () => {
@@ -458,7 +543,37 @@ describe('JobsClaimer schedule integration', () => {
     assert.match(after.lastError as string, /Invalid cron schedule "garbage"/);
   });
 
-  test('a non-Error throw from the store is stringified into lastError', async () => {
+  test('a transient store error leaves the schedule armed and retries next tick', async () => {
+    let failures = 1;
+    const disabled: string[] = [];
+    const flaky = {
+      listDue: (d: unknown, now: string, limit: number) => store.listDue(d, now, limit),
+      claimAndEnqueue: (d: unknown, claim: Parameters<ScheduleStore['claimAndEnqueue']>[1]) => {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('database is locked'); // SQLITE_BUSY-style transient
+        }
+        return store.claimAndEnqueue(d, claim);
+      },
+      disable: async (_db: unknown, id: string, lastError: string) =>
+        void disabled.push(`${id}:${lastError}`),
+    } as unknown as ScheduleStore;
+    service().upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    rewind('s');
+    const claimer = new JobsClaimer(db, jobStore, explorerOf({ j: { handle: async () => {} } }), flaky);
+
+    const first = await claimer.tick(cfg);
+    assert.equal(first.scheduled, 0);
+    assert.equal(disabled.length, 0, 'transient errors must NOT disable');
+    const between = scheduleByName('s');
+    assert.equal(between.enabled, true);
+    assert.equal(between.nextRunAt, PAST, 'still due — nothing was written');
+
+    const second = await claimer.tick(cfg);
+    assert.equal(second.scheduled, 1, 'the next tick retries and fires');
+  });
+
+  test('a non-Error store throw is stringified in the retry log path (no disable)', async () => {
     const disabled: string[] = [];
     const stub = {
       listDue: async () => [{ ...scheduleByName('s') }] as ScheduleRow[],
@@ -473,8 +588,8 @@ describe('JobsClaimer schedule integration', () => {
     const claimer = new JobsClaimer(db, jobStore, explorerOf({}), stub);
     const report = await claimer.tick(cfg);
     assert.equal(report.scheduled, 0);
-    assert.equal(disabled.length, 1);
-    assert.ok(disabled[0].endsWith(':string-boom'));
+    assert.equal(disabled.length, 0, 'store errors never disable');
+    assert.equal(scheduleByName('s').enabled, true);
   });
 
   test('a lost claim is not counted as scheduled', async () => {

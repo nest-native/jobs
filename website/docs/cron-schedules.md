@@ -55,9 +55,17 @@ export class ReportsSetup implements OnApplicationBootstrap {
 ```
 
 `upsert` validates the cron expression (and timezone) at call time — invalid
-schedules throw `InvalidScheduleError` and never reach the table. Like
-`enqueue`, `upsert` returns the store's native shape (synchronous on sqlite)
-and rides the caller's `@Transactional` context.
+schedules, including expressions that can never fire again (`0 0 30 2 *`),
+throw `InvalidScheduleError` and never reach the table. Like `enqueue`,
+`upsert` returns the store's native shape (synchronous on sqlite) and rides
+the caller's `@Transactional` context.
+
+Boot-time upserts (the pattern above) are **safe on every restart**: on an
+existing schedule, an omitted `enabled` preserves the stored value — so an
+ops `setEnabled(name, false)` kill switch survives redeploys — and the stored
+`next_run_at` is preserved while `cron`/`timezone` are unchanged, so a
+pending catch-up is not skipped and the rhythm is not perturbed. Changing the
+cron (or timezone) re-arms from now.
 
 Manage at runtime: `get(name)`, `list()`, `setEnabled(name, enabled)`,
 `remove(name)`.
@@ -84,9 +92,11 @@ behind a slow handler.
 
 **Failure isolation:** the schedule row is the source of truth. An occurrence
 exhausting its retries marks that *job* failed and never touches the
-schedule — the next occurrence fires on time. A schedule whose cron can no
-longer be evaluated (hand-edited row) is disabled with the error recorded in
-its `last_error` column instead of crashing the worker loop.
+schedule — the next occurrence fires on time. A transient store error during
+a claim (connection drop, lock timeout) leaves the schedule untouched — it is
+simply retried on the next tick. Only a schedule whose cron can no longer be
+evaluated (hand-edited row) is disabled, with the error recorded in its
+`last_error` column instead of crashing the worker loop.
 
 Timezones and DST are delegated to [croner](https://www.npmjs.com/package/croner)
 — the package's single runtime dependency. The default timezone is **UTC**,

@@ -56,13 +56,13 @@ const FeatureList: FeatureItem[] = [
     ),
   },
   {
-    title: 'Zero Runtime Dependencies',
-    icon: 'Zero',
+    title: 'DB-Stored Cron Schedules',
+    icon: 'Cron',
     description: (
       <>
-        The published package keeps runtime dependencies empty. Nest, Drizzle,
-        and your driver stay under the host application's control as peer
-        dependencies.
+        Recurring work driven by rows in your database — restart-surviving,
+        multi-instance safe (atomic claim), runtime-editable. One tiny runtime
+        dependency (croner) does the cron math; everything else stays a peer.
       </>
     ),
   },

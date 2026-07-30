@@ -100,7 +100,8 @@ timers cannot give a multi-instance deployment.
   that is exactly what consumers install. Advisories confined to dev/peer/build tooling
   or the docs `website/` are tracked by Dependabot but do not block releases.
 - **Strictness scope.** The non-negotiables (100% coverage, complexity ≤ 15,
-  zero published runtime deps, isolated major-version review) govern the *core*
+  the single-runtime-dep rule (`croner` only, §3), isolated major-version
+  review) govern the *core*
   package (`packages/jobs`). Non-core code — `sample/*`, the `website/`, dev
   tooling — uses lighter rules: dependency updates there (including majors) may
   merge on green CI without the core's major-isolation ceremony.

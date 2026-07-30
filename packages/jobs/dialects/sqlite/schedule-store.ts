@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNotNull, lte } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, lte, sql } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type {
   ResolvedScheduleUpsert,
@@ -32,6 +32,7 @@ export class SqliteScheduleStore implements ScheduleStore {
       .values({
         id: randomUUID(),
         ...input,
+        enabled: input.enabled ?? true,
         lastEnqueuedAt: null,
         lastError: null,
         createdAt: nowIso,
@@ -40,8 +41,25 @@ export class SqliteScheduleStore implements ScheduleStore {
       .onConflictDoUpdate({
         target: jobSchedules.name,
         // Updates keep id / createdAt / lastEnqueuedAt; a successful upsert
-        // clears any stale claim-time error.
-        set: { ...input, lastError: null, updatedAt: nowIso },
+        // clears any stale claim-time error. Two deliberate preservations
+        // make boot-time upserts safe: an omitted `enabled` (null) keeps the
+        // stored flag (ops kill switches survive redeploys), and the stored
+        // `next_run_at` survives while cron/timezone are unchanged (a pending
+        // catch-up is not skipped; the rhythm is not perturbed). `IS` is
+        // SQLite's null-safe equality.
+        set: {
+          nextRunAt: sql`CASE WHEN ${jobSchedules.cron} = excluded.cron AND ${jobSchedules.timezone} IS excluded.timezone AND ${jobSchedules.nextRunAt} IS NOT NULL THEN ${jobSchedules.nextRunAt} ELSE excluded.next_run_at END`,
+          jobName: input.jobName,
+          payload: input.payload,
+          cron: input.cron,
+          timezone: input.timezone,
+          maxAttempts: input.maxAttempts,
+          priority: input.priority,
+          uniqueKey: input.uniqueKey,
+          lastError: null,
+          updatedAt: nowIso,
+          ...(input.enabled !== null && { enabled: input.enabled }),
+        },
       })
       .returning()
       .get();
@@ -79,11 +97,20 @@ export class SqliteScheduleStore implements ScheduleStore {
     name: string,
     enabled: boolean,
     nextRunAt: string | null,
+    expectedUpdatedAt?: string,
   ): Promise<ScheduleRow | undefined> {
     const rows = (db as Db)
       .update(jobSchedules)
       .set({ enabled, nextRunAt, updatedAt: new Date().toISOString() })
-      .where(eq(jobSchedules.name, name))
+      .where(
+        and(
+          eq(jobSchedules.name, name),
+          // Optimistic guard: only write over the row version the caller read.
+          ...(expectedUpdatedAt === undefined
+            ? []
+            : [eq(jobSchedules.updatedAt, expectedUpdatedAt)]),
+        ),
+      )
       .returning()
       .all();
     return Promise.resolve(rows[0]);

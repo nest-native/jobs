@@ -97,6 +97,38 @@ describe('PostgresScheduleStore CRUD', () => {
     assert.equal(await store.remove(db, 'a'), false);
   });
 
+  test('upsert preserves stored enabled/nextRunAt for boot-safe redeploys', async () => {
+    const svc = service();
+    await svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    await svc.setEnabled('s', false);
+    // Redeploy: same upsert, enabled omitted → kill switch survives.
+    const after = await svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    assert.equal(after.enabled, false);
+    // Explicit enabled: true re-arms (stored nextRunAt was null).
+    const rearmed = await svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *', enabled: true });
+    assert.equal(rearmed.enabled, true);
+    assert.ok(rearmed.nextRunAt !== null);
+    // Pending catch-up survives an unchanged-cron upsert…
+    await rewind('s');
+    const kept = await svc.upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    assert.equal(kept.nextRunAt, PAST);
+    // …and a cron change re-arms from now.
+    const changed = await svc.upsert({ name: 's', jobName: 'j', cron: '30 4 * * *' });
+    assert.ok((changed.nextRunAt as string) > new Date().toISOString());
+  });
+
+  test('setEnabled honours the optimistic updatedAt guard', async () => {
+    await service().upsert({ name: 's', jobName: 'j', cron: '0 3 * * *' });
+    const row = await scheduleByName('s');
+    assert.equal(
+      await store.setEnabled(db, 's', false, null, '1999-01-01T00:00:00.000Z'),
+      undefined,
+    );
+    assert.equal((await scheduleByName('s')).enabled, true);
+    const fresh = await store.setEnabled(db, 's', false, null, row.updatedAt);
+    assert.equal(fresh?.enabled, false);
+  });
+
   test('setEnabled updates the row; unknown names resolve undefined', async () => {
     await service().upsert({ name: 's', jobName: 'x', cron: '0 3 * * *' });
     const off = await store.setEnabled(db, 's', false, null);

@@ -174,6 +174,30 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     assert.equal(created.enabled, true);
     assert.deepEqual(created.payload, { kind: 'daily' });
 
+    // Conflict-path proof on real MySQL (the ODKU VALUES() CASE): an
+    // unchanged-cron re-upsert with omitted enabled preserves BOTH the stored
+    // next_run_at (pending catch-up) and the stored enabled flag; changing
+    // the cron re-arms next_run_at to the incoming value.
+    const kept = await schedules.upsert(db, {
+      name: 'nightly-report', jobName: 'report.scheduled', payload: { kind: 'daily' },
+      cron: '0 3 * * *', timezone: null, enabled: null,
+      nextRunAt: '2031-01-01T00:00:00.000Z', maxAttempts: null, priority: null, uniqueKey: 'nightly',
+    });
+    assert.equal(kept.nextRunAt, past, 'unchanged cron preserves the stored due time');
+    assert.equal(kept.id, created.id);
+    const rearmed = await schedules.upsert(db, {
+      name: 'nightly-report', jobName: 'report.scheduled', payload: { kind: 'daily' },
+      cron: '15 3 * * *', timezone: null, enabled: null,
+      nextRunAt: '2031-01-01T00:00:00.000Z', maxAttempts: null, priority: null, uniqueKey: 'nightly',
+    });
+    assert.equal(rearmed.nextRunAt, '2031-01-01T00:00:00.000Z', 'cron change re-arms');
+    // Restore the original cron + due time for the claim assertions below.
+    await schedules.upsert(db, {
+      name: 'nightly-report', jobName: 'report.scheduled', payload: { kind: 'daily' },
+      cron: '0 3 * * *', timezone: null, enabled: null,
+      nextRunAt: past, maxAttempts: null, priority: null, uniqueKey: 'nightly',
+    });
+
     // Winning claim: CAS advances the row and the occurrence lands, atomically.
     const won = await schedules.claimAndEnqueue(db, {
       id: created.id,

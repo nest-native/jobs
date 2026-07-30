@@ -20,8 +20,16 @@ package release is useful for users.
   transaction on all three dialects. Fixed misfire policy: skip missed
   occurrences, at most one catch-up. A schedule `uniqueKey` reuses the
   active-dedup contract as an overlap guard. Occurrence retry exhaustion
-  never touches the schedule row (pinned by test). `TickReport` gains a
-  `scheduled` count.
+  never touches the schedule row (pinned by test); transient store errors
+  during a claim leave the schedule untouched and retry next tick — only an
+  unevaluable cron disables it. Upserts are boot-safe: an omitted `enabled`
+  preserves the stored flag on update (runtime kill switches survive
+  redeploys) and the stored `next_run_at` survives while cron/timezone are
+  unchanged (pending catch-ups survive restarts). Expressions with no future
+  occurrence are rejected at upsert. `TickReport` gains a `scheduled` count —
+  **breaking only for TypeScript code that CONSTRUCTS `TickReport` values**
+  (fake claimers, report aggregators): add `scheduled: 0`; code that reads
+  `tick()` results is unaffected.
 - **`croner` becomes the single runtime dependency** (cron parsing,
   timezones, DST; default timezone UTC) — the "zero runtime dependencies"
   claim is retired honestly in the README comparison. Everything else stays

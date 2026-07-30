@@ -39,6 +39,8 @@ interface MockOptions {
   /** Queue of affectedRows for successive update calls (default 1). */
   updateAffected?: number[];
   deleteAffected?: number;
+  /** Rejects the next plain insert (the upsert race path). */
+  insertError?: unknown;
 }
 
 function mockDb(options: MockOptions = {}) {
@@ -68,10 +70,17 @@ function mockDb(options: MockOptions = {}) {
     insert: () => ({
       values: (values: Record<string, unknown>) => {
         captured.inserts.push(values);
+        const outcome = options.insertError
+          ? Promise.reject(options.insertError)
+          : Promise.resolve([{}]);
         return {
+          // Plain awaited insert (schedule upsert) — a thenable…
+          then: (f?: (v: unknown) => unknown, r?: (e: unknown) => unknown) =>
+            outcome.then(f, r),
+          // …that also supports the claim path's duplicate no-op idiom.
           onDuplicateKeyUpdate: (update: { set: Record<string, unknown> }) => {
             captured.dupSets.push(update.set);
-            return Promise.resolve([{}]);
+            return outcome;
           },
         };
       },
@@ -95,38 +104,81 @@ function mockDb(options: MockOptions = {}) {
 }
 
 describe('MysqlScheduleStore CRUD', () => {
-  test('upsert inserts with bookkeeping, no-ops identity on duplicate, reads back', async () => {
+  const upsertInput = {
+    name: 's',
+    jobName: 'j',
+    payload: { n: 1 },
+    cron: '0 3 * * *',
+    timezone: null,
+    enabled: null,
+    nextRunAt: '2026-01-01T03:00:00.000Z',
+    maxAttempts: null,
+    priority: null,
+    uniqueKey: null,
+  };
+
+  test('upsert inserts when absent (get miss → insert → read back)', async () => {
     const persisted = scheduleRow();
-    const { db, captured } = mockDb({ selects: [[persisted]] });
-
-    const result = await store.upsert(db, {
-      name: 's',
-      jobName: 'j',
-      payload: { n: 1 },
-      cron: '0 3 * * *',
-      timezone: null,
-      enabled: true,
-      nextRunAt: '2026-01-01T03:00:00.000Z',
-      maxAttempts: null,
-      priority: null,
-      uniqueKey: null,
-    });
+    // selects: get miss, then tryInsert's read-back.
+    const { db, captured } = mockDb({ selects: [[], [persisted]] });
+    const result = await store.upsert(db, { ...upsertInput, enabled: true });
     assert.equal(result, persisted);
-
     const insert = captured.inserts[0];
     assert.ok(typeof insert.id === 'string' && insert.id.length > 0);
+    assert.equal(insert.enabled, true);
     assert.equal(insert.lastError, null);
     assert.equal(insert.lastEnqueuedAt, null);
     assert.equal(insert.createdAt, insert.updatedAt);
+  });
 
-    // The duplicate-key update must not touch identity or claim bookkeeping.
-    const dup = captured.dupSets[0];
-    assert.ok(!('id' in dup));
-    assert.ok(!('name' in dup));
-    assert.ok(!('createdAt' in dup));
-    assert.ok(!('lastEnqueuedAt' in dup));
-    assert.equal(dup.lastError, null);
-    assert.equal(dup.jobName, 'j');
+  test('upsert insert path defaults omitted enabled to true', async () => {
+    const { db, captured } = mockDb({ selects: [[], [scheduleRow()]] });
+    await store.upsert(db, upsertInput);
+    assert.equal(captured.inserts[0].enabled, true);
+  });
+
+  test('upsert update path preserves stored enabled/nextRunAt while cron is unchanged', async () => {
+    const existing = scheduleRow({ enabled: false, nextRunAt: '2020-06-01T00:00:00.000Z' });
+    const updated = scheduleRow({ enabled: false });
+    const { db, captured } = mockDb({ selects: [[existing], [updated]] });
+    const result = await store.upsert(db, upsertInput); // same cron/timezone, enabled omitted
+    assert.equal(result, updated);
+    assert.equal(captured.inserts.length, 0, 'no insert on the update path');
+    const set = captured.sets[0];
+    assert.equal(set.enabled, false, 'omitted enabled preserves the stored flag');
+    assert.equal(set.nextRunAt, '2020-06-01T00:00:00.000Z', 'unchanged cron preserves the due time');
+    assert.equal(set.lastError, null);
+    assert.ok(!('id' in set) && !('name' in set) && !('createdAt' in set));
+  });
+
+  test('upsert update path re-arms when cron changed or stored nextRunAt is null', async () => {
+    const changedCron = scheduleRow();
+    const { db, captured } = mockDb({ selects: [[changedCron], [changedCron]] });
+    await store.upsert(db, { ...upsertInput, cron: '15 4 * * *', enabled: true });
+    assert.equal(captured.sets[0].nextRunAt, upsertInput.nextRunAt);
+    assert.equal(captured.sets[0].enabled, true);
+
+    const dormant = scheduleRow({ nextRunAt: null });
+    const second = mockDb({ selects: [[dormant], [dormant]] });
+    await store.upsert(second.db, upsertInput);
+    assert.equal(second.captured.sets[0].nextRunAt, upsertInput.nextRunAt);
+  });
+
+  test('upsert recovers from a lost concurrent first-upsert race (ER_DUP_ENTRY)', async () => {
+    const winner = scheduleRow();
+    const { db, captured } = mockDb({
+      // get miss → insert rejects → race re-read → post-update read-back.
+      selects: [[], [winner], [winner]],
+      insertError: { code: 'ER_DUP_ENTRY', errno: 1062 },
+    });
+    const result = await store.upsert(db, upsertInput);
+    assert.equal(result, winner);
+    assert.equal(captured.sets.length, 1, 'fell through to the update path');
+  });
+
+  test('upsert rethrows non-duplicate insert errors', async () => {
+    const { db } = mockDb({ selects: [[]], insertError: new Error('connection lost') });
+    await assert.rejects(store.upsert(db, upsertInput), /connection lost/);
   });
 
   test('get resolves the row or undefined', async () => {
@@ -151,7 +203,22 @@ describe('MysqlScheduleStore CRUD', () => {
     assert.equal(await store.setEnabled(db, 's', false, null), row);
     assert.equal(captured.sets[0].enabled, false);
     assert.equal(captured.sets[0].nextRunAt, null);
-    assert.equal(await store.setEnabled(mockDb().db, 'nope', true, null), undefined);
+    // Zero affected rows (unknown name OR guard miss) resolves undefined
+    // WITHOUT reading back the untouched row.
+    assert.equal(
+      await store.setEnabled(mockDb({ updateAffected: [0] }).db, 'nope', true, null),
+      undefined,
+    );
+    assert.equal(
+      await store.setEnabled(
+        mockDb({ updateAffected: [0] }).db,
+        's',
+        true,
+        '2999-01-01T00:00:00.000Z',
+        '1999-01-01T00:00:00.000Z',
+      ),
+      undefined,
+    );
   });
 
   test('listDue resolves the select result', async () => {
