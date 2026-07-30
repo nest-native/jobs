@@ -189,7 +189,7 @@ describe('JobsClaimer (handler outcomes)', () => {
   test('tick runs a pending job through its @JobHandler and completes it', async () => {
     const row = await app.get(UserService).register('c@example.com');
     const report = await app.get(JobsClaimer).tick();
-    assert.deepEqual(report, { claimed: 1, completed: 1, retried: 0, failed: 0 });
+    assert.deepEqual(report, { scheduled: 0, claimed: 1, completed: 1, retried: 0, failed: 0 });
     const executions = welcome().executions();
     assert.equal(executions.length, 1);
     assert.deepEqual(executions[0]?.payload, { email: 'c@example.com' });
@@ -212,7 +212,7 @@ describe('JobsClaimer (handler outcomes)', () => {
   test('a job with no registered handler fails immediately', async () => {
     store.enqueue(db, { name: 'nobody.listens', payload: {} });
     const report = await app.get(JobsClaimer).tick();
-    assert.deepEqual(report, { claimed: 1, completed: 0, retried: 0, failed: 1 });
+    assert.deepEqual(report, { scheduled: 0, claimed: 1, completed: 0, retried: 0, failed: 1 });
     const after = db.select().from(jobs).all()[0];
     assert.equal(after?.status, 'failed');
     assert.match(after?.lastError ?? '', /No @JobHandler registered for job "nobody.listens"/);
@@ -242,7 +242,7 @@ describe('JobsClaimer (handler outcomes)', () => {
     const row = await app.get(UserService).register('f@example.com');
     // delayMs 0 → the retry is due immediately, so one drain settles it.
     const report = await drainJobs(app.get(JobsClaimer));
-    assert.deepEqual(report, { claimed: 2, completed: 1, retried: 1, failed: 0 });
+    assert.deepEqual(report, { scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0 });
     const executions = welcome().executions();
     assert.equal(executions.length, 2);
     assert.deepEqual(executions[1]?.ctx, { jobId: row.id, attempt: 2 });

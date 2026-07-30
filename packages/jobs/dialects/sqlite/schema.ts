@@ -43,3 +43,42 @@ export const jobs = sqliteTable(
     index('jobs_status_available_idx').on(table.status, table.availableAt),
   ],
 );
+
+/**
+ * SQLite `job_schedules` table. Add it to your Drizzle schema (alongside
+ * `jobs`) and generate a migration with drizzle-kit — only needed when you
+ * opt in to schedules.
+ *
+ * `name` is the unique schedule identity (upserts key on it); the
+ * `(enabled, next_run_at)` index serves the claimer's due query. Timestamps
+ * are ISO-8601 strings, like every timestamp in this package.
+ */
+export const jobSchedules = sqliteTable(
+  'job_schedules',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    jobName: text('job_name').notNull(),
+    payload: text('payload', { mode: 'json' })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    cron: text('cron').notNull(),
+    timezone: text('timezone'),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    nextRunAt: text('next_run_at'),
+    maxAttempts: integer('max_attempts'),
+    priority: integer('priority'),
+    uniqueKey: text('unique_key'),
+    lastEnqueuedAt: text('last_enqueued_at'),
+    lastError: text('last_error'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('job_schedules_name_unique').on(table.name),
+    index('job_schedules_enabled_next_run_idx').on(
+      table.enabled,
+      table.nextRunAt,
+    ),
+  ],
+);

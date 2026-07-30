@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -42,5 +43,42 @@ export const jobs = pgTable(
   (table) => [
     uniqueIndex('jobs_name_unique_key_unique').on(table.name, table.uniqueKey),
     index('jobs_status_available_idx').on(table.status, table.availableAt),
+  ],
+);
+
+/**
+ * Postgres `job_schedules` table. Add it to your Drizzle schema (alongside
+ * `jobs`) and generate a migration with drizzle-kit — only needed when you
+ * opt in to schedules.
+ *
+ * `name` is the unique schedule identity (upserts key on it); the
+ * `(enabled, next_run_at)` index serves the claimer's due query. Timestamps
+ * are ISO-8601 strings, like every timestamp in this package.
+ */
+export const jobSchedules = pgTable(
+  'job_schedules',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    jobName: text('job_name').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    cron: text('cron').notNull(),
+    timezone: text('timezone'),
+    enabled: boolean('enabled').notNull().default(true),
+    nextRunAt: text('next_run_at'),
+    maxAttempts: integer('max_attempts'),
+    priority: integer('priority'),
+    uniqueKey: text('unique_key'),
+    lastEnqueuedAt: text('last_enqueued_at'),
+    lastError: text('last_error'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('job_schedules_name_unique').on(table.name),
+    index('job_schedules_enabled_next_run_idx').on(
+      table.enabled,
+      table.nextRunAt,
+    ),
   ],
 );

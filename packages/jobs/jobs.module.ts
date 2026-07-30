@@ -7,11 +7,17 @@ import {
   type Provider,
 } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
-import type { JobsModuleOptions, JobStore } from './interfaces';
+import type { JobsModuleOptions, JobStore, ScheduleStore } from './interfaces';
+import { JobSchedulesService } from './job-schedules.service';
 import { JobsClaimer } from './jobs-claimer.service';
 import { JobsHandlerExplorer } from './jobs-handler.explorer';
 import { JobsService } from './jobs.service';
-import { JOBS_DRIZZLE, JOBS_OPTIONS, JOBS_STORE } from './tokens';
+import {
+  JOBS_DRIZZLE,
+  JOBS_OPTIONS,
+  JOBS_SCHEDULE_STORE,
+  JOBS_STORE,
+} from './tokens';
 
 /**
  * Async configuration. The Drizzle token is static (a DI token is known at
@@ -28,6 +34,8 @@ export interface JobsModuleAsyncOptions {
   // an idiomatic factory whose params match `inject` (e.g. `(cfg: Config) => …`)
   // is assignable under `strictFunctionTypes` without forcing the caller to cast.
   useStore: (...args: any[]) => JobStore | Promise<JobStore>;
+  /** Optional schedules opt-in; shares `inject` with `useStore`. */
+  useScheduleStore?: (...args: any[]) => ScheduleStore | Promise<ScheduleStore>;
 }
 
 @Module({})
@@ -36,6 +44,7 @@ export class JobsModule {
     return assemble(options.isGlobal ?? true, options.imports ?? [], [
       { provide: JOBS_OPTIONS, useValue: options },
       { provide: JOBS_STORE, useValue: options.store },
+      { provide: JOBS_SCHEDULE_STORE, useValue: options.scheduleStore ?? null },
       { provide: JOBS_DRIZZLE, useExisting: options.drizzleInstanceToken },
     ]);
   }
@@ -47,6 +56,13 @@ export class JobsModule {
         useFactory: options.useStore,
         inject: options.inject ?? [],
       },
+      options.useScheduleStore
+        ? {
+            provide: JOBS_SCHEDULE_STORE,
+            useFactory: options.useScheduleStore,
+            inject: options.inject ?? [],
+          }
+        : { provide: JOBS_SCHEDULE_STORE, useValue: null },
       { provide: JOBS_DRIZZLE, useExisting: options.drizzleInstanceToken },
     ]);
   }
@@ -62,7 +78,13 @@ function assemble(
     global,
     // DiscoveryModule powers the @JobHandler scan at bootstrap.
     imports: [DiscoveryModule, ...imports],
-    providers: [...base, JobsService, JobsClaimer, JobsHandlerExplorer],
-    exports: [JobsService, JobsClaimer, JobsHandlerExplorer],
+    providers: [
+      ...base,
+      JobsService,
+      JobSchedulesService,
+      JobsClaimer,
+      JobsHandlerExplorer,
+    ],
+    exports: [JobsService, JobSchedulesService, JobsClaimer, JobsHandlerExplorer],
   };
 }

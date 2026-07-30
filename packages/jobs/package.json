@@ -74,7 +74,9 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
-  "dependencies": {},
+  "dependencies": {
+    "croner": "^10.0.1"
+  },
   "peerDependencies": {
     "@nestjs-cls/transactional": "^3.0.0",
     "@nestjs/common": "^11.0.0",

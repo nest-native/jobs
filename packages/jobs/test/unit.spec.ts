@@ -56,6 +56,7 @@ describe('resolveAvailableAt (runAt XOR delayMs)', () => {
 
 describe('drainJobs', () => {
   const report = (claimed: number, completed = claimed): TickReport => ({
+    scheduled: 0,
     claimed,
     completed,
     retried: 0,
@@ -66,11 +67,11 @@ describe('drainJobs', () => {
 
   test('ticks until a tick claims nothing and aggregates the reports', async () => {
     const claimer = fakeClaimer([
-      { claimed: 2, completed: 1, retried: 1, failed: 0 },
-      { claimed: 1, completed: 0, retried: 0, failed: 1 },
+      { scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0 },
+      { scheduled: 0, claimed: 1, completed: 0, retried: 0, failed: 1 },
     ]);
     const total = await drainJobs(claimer);
-    assert.deepEqual(total, { claimed: 3, completed: 1, retried: 1, failed: 1 });
+    assert.deepEqual(total, { scheduled: 0, claimed: 3, completed: 1, retried: 1, failed: 1 });
   });
 
   test('passes runner overrides through to every tick', async () => {

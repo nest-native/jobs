@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   int,
   json,
@@ -54,5 +55,43 @@ export const jobs = mysqlTable(
   (table) => [
     uniqueIndex('jobs_name_unique_key_unique').on(table.name, table.uniqueKey),
     index('jobs_status_available_idx').on(table.status, table.availableAt),
+  ],
+);
+
+/**
+ * MySQL `job_schedules` table. Add it to your Drizzle schema (alongside
+ * `jobs`) and generate a migration with drizzle-kit — only needed when you
+ * opt in to schedules.
+ *
+ * Same design notes as `jobs`: ISO-8601 `varchar` timestamps (lexicographic
+ * comparison drives the due query), key columns capped at 191 chars for
+ * index-width headroom. `name` is the unique schedule identity; the
+ * `(enabled, next_run_at)` index serves the claimer's due query.
+ */
+export const jobSchedules = mysqlTable(
+  'job_schedules',
+  {
+    id: varchar('id', { length: 191 }).primaryKey(),
+    name: varchar('name', { length: 191 }).notNull(),
+    jobName: varchar('job_name', { length: 255 }).notNull(),
+    payload: json('payload').$type<Record<string, unknown>>().notNull(),
+    cron: varchar('cron', { length: 255 }).notNull(),
+    timezone: varchar('timezone', { length: 64 }),
+    enabled: boolean('enabled').notNull().default(true),
+    nextRunAt: varchar('next_run_at', { length: 32 }),
+    maxAttempts: int('max_attempts'),
+    priority: int('priority'),
+    uniqueKey: varchar('unique_key', { length: 191 }),
+    lastEnqueuedAt: varchar('last_enqueued_at', { length: 32 }),
+    lastError: text('last_error'),
+    createdAt: varchar('created_at', { length: 32 }).notNull(),
+    updatedAt: varchar('updated_at', { length: 32 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('job_schedules_name_unique').on(table.name),
+    index('job_schedules_enabled_next_run_idx').on(
+      table.enabled,
+      table.nextRunAt,
+    ),
   ],
 );

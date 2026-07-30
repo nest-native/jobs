@@ -116,6 +116,136 @@ export interface JobStore {
   markFailed(db: unknown, id: string, reason: string): Promise<void>;
 }
 
+/**
+ * The dialect-agnostic shape of a `job_schedules` row. Like {@link JobRow},
+ * timestamps are ISO-8601 strings on every dialect (lexicographic comparison
+ * is what `listDue` relies on). `nextRunAt` is `null` only when the schedule
+ * has no future occurrence (the claimer also disables it then).
+ */
+export interface ScheduleRow {
+  id: string;
+  /** Unique schedule identity — upserts key on it. */
+  name: string;
+  /** The `@JobHandler` name each occurrence enqueues. */
+  jobName: string;
+  payload: Record<string, unknown>;
+  /** Cron expression (croner syntax). */
+  cron: string;
+  /** IANA timezone; `null` means UTC. */
+  timezone: string | null;
+  enabled: boolean;
+  nextRunAt: string | null;
+  /** Occurrence enqueue overrides; `null` falls back to the store default. */
+  maxAttempts: number | null;
+  priority: number | null;
+  /**
+   * When set, every occurrence enqueues with this `uniqueKey` — so while one
+   * occurrence is still ACTIVE the next is a dedup no-op (the overlap guard),
+   * reusing the jobs uniqueKey contract verbatim.
+   */
+  uniqueKey: string | null;
+  lastEnqueuedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What a caller supplies to {@link JobSchedulesService.upsert}. */
+export interface UpsertScheduleInput<
+  TPayload extends object = Record<string, unknown>,
+> {
+  /** Unique schedule identity — upserting an existing name updates it. */
+  name: string;
+  /** The `@JobHandler` name each occurrence enqueues. */
+  jobName: string;
+  payload?: TPayload;
+  /** Cron expression (croner syntax); validated at call time. */
+  cron: string;
+  /** IANA timezone (default UTC). */
+  timezone?: string;
+  /** Default true. */
+  enabled?: boolean;
+  maxAttempts?: number;
+  priority?: number;
+  /** Occurrence dedup key — the overlap guard (see {@link ScheduleRow.uniqueKey}). */
+  uniqueKey?: string;
+}
+
+/** The fully-resolved row content the service hands `ScheduleStore.upsert`. */
+export interface ResolvedScheduleUpsert {
+  name: string;
+  jobName: string;
+  payload: Record<string, unknown>;
+  cron: string;
+  timezone: string | null;
+  enabled: boolean;
+  nextRunAt: string | null;
+  maxAttempts: number | null;
+  priority: number | null;
+  uniqueKey: string | null;
+}
+
+/** One due-schedule claim attempt (see {@link ScheduleStore.claimAndEnqueue}). */
+export interface ScheduleClaim {
+  id: string;
+  /** CAS guard: the `nextRunAt` this claimer read — the claim wins only if it is unchanged. */
+  expectedNextRunAt: string;
+  /** The new `nextRunAt`; `null` disables the schedule (no future occurrence). */
+  nextRunAt: string | null;
+  nowIso: string;
+  /** The occurrence to enqueue when the claim wins. */
+  input: EnqueueJobInput<object>;
+}
+
+export interface ScheduleClaimResult {
+  /** True when THIS claimer won the compare-and-swap (the row advanced). */
+  claimed: boolean;
+  /**
+   * The occurrence job inserted by THIS claim. `null` when the claim lost,
+   * or when the overlap guard suppressed the insert (an occurrence with the
+   * schedule's `(name, uniqueKey)` is still active) — in the latter case the
+   * schedule still advanced.
+   */
+  job: JobRow | null;
+}
+
+/**
+ * The transactional persistence seam for schedules — same design as
+ * {@link JobStore}: dialect-specific, owns its Drizzle table and transactions,
+ * `db` is opaque to the engine. `upsert` returns the store's native shape
+ * (synchronous on sqlite, a `Promise` on pg/mysql) so it composes inside the
+ * caller's `@Transactional` body.
+ *
+ * `claimAndEnqueue` is the exactly-once occurrence handoff: in ONE store
+ * transaction it (1) compare-and-swaps the row's `nextRunAt` from
+ * `expectedNextRunAt` to the new value (losing the race returns
+ * `{ claimed: false }` with nothing written) and (2) inserts the occurrence
+ * job conflict-tolerantly (a `(name, unique_key)` duplicate is the overlap
+ * guard, not an error — the schedule still advances).
+ */
+export interface ScheduleStore {
+  upsert(
+    db: unknown,
+    input: ResolvedScheduleUpsert,
+  ): ScheduleRow | Promise<ScheduleRow>;
+  get(db: unknown, name: string): Promise<ScheduleRow | undefined>;
+  list(db: unknown): Promise<ScheduleRow[]>;
+  /** Resolves true when a row was deleted. */
+  remove(db: unknown, name: string): Promise<boolean>;
+  /** Flips `enabled` and overwrites `nextRunAt`; resolves the updated row (undefined when the name is unknown). */
+  setEnabled(
+    db: unknown,
+    name: string,
+    enabled: boolean,
+    nextRunAt: string | null,
+  ): Promise<ScheduleRow | undefined>;
+  /** Enabled rows with a non-null `nextRunAt <= nowIso`, oldest due first. */
+  listDue(db: unknown, nowIso: string, limit: number): Promise<ScheduleRow[]>;
+  claimAndEnqueue(db: unknown, claim: ScheduleClaim): Promise<ScheduleClaimResult>;
+  /** Disables a corrupted schedule (invalid cron found at claim time) recording `lastError`. */
+  disable(db: unknown, id: string, lastError: string): Promise<void>;
+}
+
 /** Options for {@link JobsModule.forRoot}. */
 export interface JobsModuleOptions {
   /**
@@ -126,6 +256,12 @@ export interface JobsModuleOptions {
   drizzleInstanceToken: symbol | string;
   /** The dialect-specific job store. */
   store: JobStore;
+  /**
+   * The dialect-specific schedule store. OPT-IN: without it the claimer never
+   * touches schedules and `JobSchedulesService` throws on use — 0.1 behavior
+   * is unchanged.
+   */
+  scheduleStore?: ScheduleStore;
   /**
    * Modules that provide (and export) the `drizzleInstanceToken`. Required when
    * that token is not registered by a global module — `JobsModule` imports

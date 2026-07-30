@@ -5,7 +5,9 @@ import { eq } from 'drizzle-orm';
 import { DEFAULT_RUNNER_CONFIG } from '../../jobs-claimer.service';
 import {
   jobs as mysqlJobs,
+  jobSchedules as mysqlJobSchedules,
   MysqlJobStore,
+  MysqlScheduleStore,
 } from '../../dialects/mysql';
 
 // Gated end-to-end test against a REAL MySQL. It skips unless JOBS_MYSQL_URL
@@ -21,6 +23,15 @@ const cfg = { ...DEFAULT_RUNNER_CONFIG, batchSize: 50, stuckTimeoutMs: 1_000 };
 
 const MYSQL_DDL = [
   'DROP TABLE IF EXISTS jobs',
+  'DROP TABLE IF EXISTS job_schedules',
+  `CREATE TABLE job_schedules (
+     id VARCHAR(191) PRIMARY KEY, name VARCHAR(191) NOT NULL, job_name VARCHAR(255) NOT NULL,
+     payload JSON NOT NULL, cron VARCHAR(255) NOT NULL, timezone VARCHAR(64),
+     enabled BOOLEAN NOT NULL DEFAULT true, next_run_at VARCHAR(32), max_attempts INT,
+     priority INT, unique_key VARCHAR(191), last_enqueued_at VARCHAR(32), last_error TEXT,
+     created_at VARCHAR(32) NOT NULL, updated_at VARCHAR(32) NOT NULL,
+     UNIQUE KEY job_schedules_name_unique (name),
+     KEY job_schedules_enabled_next_run_idx (enabled, next_run_at))`,
   `CREATE TABLE jobs (
      id VARCHAR(191) PRIMARY KEY, name VARCHAR(255) NOT NULL, payload JSON NOT NULL,
      status VARCHAR(32) NOT NULL, attempts INT NOT NULL DEFAULT 0, max_attempts INT NOT NULL DEFAULT 10,
@@ -141,5 +152,70 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     const reclaimed = claimed.find((j) => j.id === job.id);
     assert.ok(reclaimed, 'stuck job reclaimed');
     assert.equal(reclaimed?.claimedBy, cfg.workerInstanceId);
+  });
+
+  test('schedules: upsert -> claim (CAS + occurrence insert) -> overlap no-op, on real MySQL', async () => {
+    const schedules = new MysqlScheduleStore();
+    const past = '2020-01-01T00:00:00.000Z';
+    const future = '2999-01-01T00:00:00.000Z';
+
+    const created = await schedules.upsert(db, {
+      name: 'nightly-report',
+      jobName: 'report.scheduled',
+      payload: { kind: 'daily' },
+      cron: '0 3 * * *',
+      timezone: null,
+      enabled: true,
+      nextRunAt: past,
+      maxAttempts: null,
+      priority: null,
+      uniqueKey: 'nightly',
+    });
+    assert.equal(created.enabled, true);
+    assert.deepEqual(created.payload, { kind: 'daily' });
+
+    // Winning claim: CAS advances the row and the occurrence lands, atomically.
+    const won = await schedules.claimAndEnqueue(db, {
+      id: created.id,
+      expectedNextRunAt: past,
+      nextRunAt: future,
+      nowIso: new Date().toISOString(),
+      input: { name: 'report.scheduled', payload: { kind: 'daily' }, uniqueKey: 'nightly' },
+    });
+    assert.equal(won.claimed, true);
+    assert.equal(won.job?.name, 'report.scheduled');
+    const [advanced] = await db
+      .select()
+      .from(mysqlJobSchedules)
+      .where(eq(mysqlJobSchedules.name, 'nightly-report'));
+    assert.equal(advanced.nextRunAt, future);
+    assert.equal(advanced.enabled, true);
+
+    // A stale CAS (someone else already advanced it) writes nothing.
+    const lost = await schedules.claimAndEnqueue(db, {
+      id: created.id,
+      expectedNextRunAt: past,
+      nextRunAt: '3000-01-01T00:00:00.000Z',
+      nowIso: new Date().toISOString(),
+      input: { name: 'report.scheduled', payload: {} },
+    });
+    assert.deepEqual(lost, { claimed: false, job: null });
+
+    // Overlap guard on real MySQL: the previous occurrence is still active
+    // (pending), so ON DUPLICATE KEY no-ops the insert — claimed, job null.
+    const suppressed = await schedules.claimAndEnqueue(db, {
+      id: created.id,
+      expectedNextRunAt: future,
+      nextRunAt: '3000-01-01T00:00:00.000Z',
+      nowIso: new Date().toISOString(),
+      input: { name: 'report.scheduled', payload: {}, uniqueKey: 'nightly' },
+    });
+    assert.equal(suppressed.claimed, true);
+    assert.equal(suppressed.job, null);
+    const occurrences = await db
+      .select()
+      .from(mysqlJobs)
+      .where(eq(mysqlJobs.name, 'report.scheduled'));
+    assert.equal(occurrences.length, 1);
   });
 });

@@ -1,14 +1,18 @@
 import { hostname } from 'node:os';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { PermanentError, RetryableError } from './errors';
 import type {
+  EnqueueJobInput,
   JobRow,
   JobStore,
   ResolvedRunnerConfig,
   RunnerConfig,
+  ScheduleRow,
+  ScheduleStore,
 } from './interfaces';
 import { JobsHandlerExplorer } from './jobs-handler.explorer';
-import { JOBS_DRIZZLE, JOBS_STORE } from './tokens';
+import { nextOccurrence } from './schedule-planner';
+import { JOBS_DRIZZLE, JOBS_SCHEDULE_STORE, JOBS_STORE } from './tokens';
 
 export const DEFAULT_RUNNER_CONFIG: ResolvedRunnerConfig = {
   workerInstanceId: `${hostname()}-${process.pid}`,
@@ -19,6 +23,8 @@ export const DEFAULT_RUNNER_CONFIG: ResolvedRunnerConfig = {
 };
 
 export interface TickReport {
+  /** Schedule occurrences THIS tick enqueued (won claims; dedup-suppressed occurrences still count as claimed). */
+  scheduled: number;
   claimed: number;
   completed: number;
   retried: number;
@@ -51,12 +57,19 @@ export class JobsClaimer {
     @Inject(JOBS_DRIZZLE) private readonly db: unknown,
     @Inject(JOBS_STORE) private readonly store: JobStore,
     private readonly explorer: JobsHandlerExplorer,
+    @Optional()
+    @Inject(JOBS_SCHEDULE_STORE)
+    private readonly scheduleStore: ScheduleStore | null = null,
   ) {}
 
   async tick(overrides: RunnerConfig = {}): Promise<TickReport> {
     const cfg = { ...DEFAULT_RUNNER_CONFIG, ...overrides };
+    // Due schedules fire first, so their occurrences (due immediately) are
+    // claimable by this very tick's batch claim.
+    const scheduled = this.scheduleStore ? await this.drainSchedules(cfg) : 0;
     const claimed = await this.store.claimBatch(this.db, cfg);
     const report: TickReport = {
+      scheduled,
       claimed: claimed.length,
       completed: 0,
       retried: 0,
@@ -67,6 +80,50 @@ export class JobsClaimer {
       report[outcome] += 1;
     }
     return report;
+  }
+
+  /**
+   * Fires every due schedule at most once. Per schedule: compute the next
+   * occurrence strictly after *now* (skip-missed policy — a schedule that was
+   * down for a week gets at most this one catch-up), then let the store
+   * compare-and-swap `nextRunAt` and insert the occurrence in ONE transaction.
+   * A lost CAS means another instance fired it — not an error, not counted.
+   * A schedule whose cron cannot be evaluated (hand-corrupted row) is disabled
+   * with the error recorded, and the loop continues.
+   */
+  private async drainSchedules(cfg: ResolvedRunnerConfig): Promise<number> {
+    const now = new Date();
+    const due = await this.scheduleStore!.listDue(
+      this.db,
+      now.toISOString(),
+      cfg.batchSize,
+    );
+    let scheduled = 0;
+    for (const schedule of due) {
+      scheduled += await this.fireSchedule(schedule, now);
+    }
+    return scheduled;
+  }
+
+  private async fireSchedule(schedule: ScheduleRow, now: Date): Promise<number> {
+    try {
+      const result = await this.scheduleStore!.claimAndEnqueue(this.db, {
+        id: schedule.id,
+        // listDue only returns rows with a non-null nextRunAt.
+        expectedNextRunAt: schedule.nextRunAt as string,
+        nextRunAt: nextOccurrence(schedule.cron, schedule.timezone, now),
+        nowIso: now.toISOString(),
+        input: occurrenceInput(schedule),
+      });
+      return result.claimed ? 1 : 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `schedule ${schedule.id} ("${schedule.name}") disabled: ${message}`,
+      );
+      await this.scheduleStore!.disable(this.db, schedule.id, message);
+      return 0;
+    }
   }
 
   private async processOne(
@@ -131,4 +188,15 @@ export class JobsClaimer {
     const capped = Math.min(base, cfg.maxBackoffMs);
     return capped + Math.floor(Math.random() * cfg.baseBackoffMs);
   }
+}
+
+/** The occurrence a schedule enqueues: due immediately, overrides only when set. */
+function occurrenceInput(schedule: ScheduleRow): EnqueueJobInput<object> {
+  return {
+    name: schedule.jobName,
+    payload: schedule.payload,
+    ...(schedule.maxAttempts !== null && { maxAttempts: schedule.maxAttempts }),
+    ...(schedule.priority !== null && { priority: schedule.priority }),
+    ...(schedule.uniqueKey !== null && { uniqueKey: schedule.uniqueKey }),
+  };
 }

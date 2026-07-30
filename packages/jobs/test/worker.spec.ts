@@ -5,6 +5,7 @@ import type { JobsClaimer, TickReport } from '../jobs-claimer.service';
 import { runWorkerLoop } from '../jobs-worker';
 
 const report = (claimed: number): TickReport => ({
+  scheduled: 0,
   claimed,
   completed: claimed,
   retried: 0,
