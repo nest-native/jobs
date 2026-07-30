@@ -8,6 +8,20 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.2.1
+
+- **`better-sqlite3` 13 is now an allowed peer** (`^11 || ^12 || ^13`). Isolated
+  major-version review: v13 is an N-API rewrite whose JavaScript surface is
+  purely additive (`db.explain()`, `statement.toString()`) with no removals, and
+  the `SqliteError.code` the active-dedup contract keys on
+  (`SQLITE_CONSTRAINT_UNIQUE`) is unchanged. The whole suite, 100% coverage, and
+  the showcase smoke were run against 13.0.2 before widening, and a new CI leg
+  keeps running them there.
+  Note that better-sqlite3 13 requires **Node >=22**, while this package still
+  supports Node >=20 — so the range is widened, not moved: the devDependency
+  stays on 12.x. Nothing in the package changed behaviorally; consumers on Node
+  22+ can now upgrade their own `better-sqlite3` without an npm `ERESOLVE`.
+
 ## 0.2.0
 
 - **DB-stored cron schedules** — the django-celery-beat pattern on the
