@@ -107,6 +107,13 @@ timers cannot give a multi-instance deployment.
   function. NestJS parameter decorators need
   `javascript.parser.unsafeParameterDecoratorsEnabled: true` — without it Biome
   fails to parse every injected constructor.
+  **This did not unblock TypeScript 7** (#8, closed): `tsc` 7 typechecks and
+  emits this package identically to 6, but `ts-node` — which the test runner
+  and the sample smoke both load — cannot register at all, because TS 7's JS
+  API drops `ts.sys`. Moving to TS 7 therefore means moving off `ts-node`
+  first, and `emitDecoratorMetadata` rules out Node's native type stripping and
+  esbuild/tsx, leaving `@swc/register` plus a new dev dependency. Deliberate
+  change, not a dependabot bump.
 - Tests cover all three dialects hermetically (sqlite in-memory, pglite
   in-process, mysql mock-db) plus a gated real-MySQL integration spec
   (`JOBS_MYSQL_URL`).
