@@ -8,6 +8,19 @@ package release is useful for users.
 
 ## Unreleased
 
+- **Tooling: the cognitive complexity gate moved from ESLint to Biome.** No
+  change to the published package — this repo only ever used ESLint for
+  `sonarjs/cognitive-complexity`, and `@typescript-eslint/parser` was there
+  purely to parse TypeScript. That parser hard-refuses TypeScript 7 at require
+  time (`typescript-eslint` support is tracked upstream for TS >= 7.1), which
+  meant a lint dependency was gating the compiler. Biome enforces the same
+  ceiling of 15 with `complexity/noExcessiveCognitiveComplexity`, has no
+  TypeScript dependency at all, and drops ~90 transitive dev dependencies.
+  Biome's metric is its own implementation of the SonarSource definition and
+  scores slightly higher (max function here 6 → 7, same code, still far under
+  the ceiling), and it cannot report below complexity 2 — so
+  `complexity:report` now lists non-trivial functions rather than all of them.
+
 ## 0.2.1
 
 - **`better-sqlite3` 13 is now an allowed peer** (`^11 || ^12 || ^13`). Isolated

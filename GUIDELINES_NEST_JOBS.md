@@ -93,7 +93,20 @@ timers cannot give a multi-instance deployment.
 - NestJS naming + DI conventions; discovery via `DiscoveryService`, tokens via
   `Symbol.for`.
 - 100% test coverage (branches/functions/lines/statements) on the core package;
-  SonarJS cognitive complexity ≤ 15 per function.
+  cognitive complexity ≤ 15 per function, enforced by **Biome**
+  (`complexity/noExcessiveCognitiveComplexity`, config in `biome.json`).
+  Biome replaced ESLint + `@typescript-eslint/parser` + `eslint-plugin-sonarjs`
+  because the parser is pinned to the TypeScript release cycle (it refuses TS 7
+  outright) and this repo only ever used it for that one rule. Biome is a
+  native binary with no TypeScript dependency, so the lint gate no longer
+  gates the compiler. Two consequences worth knowing: Biome's cognitive
+  complexity metric is its own implementation of the SonarSource definition and
+  scores slightly higher (max here moved 6 → 7 at identical code), and its rule
+  cannot be configured below `maxAllowedComplexity: 1`, so
+  `complexity:report` lists functions scoring 2 or more rather than every
+  function. NestJS parameter decorators need
+  `javascript.parser.unsafeParameterDecoratorsEnabled: true` — without it Biome
+  fails to parse every injected constructor.
 - Tests cover all three dialects hermetically (sqlite in-memory, pglite
   in-process, mysql mock-db) plus a gated real-MySQL integration spec
   (`JOBS_MYSQL_URL`).
