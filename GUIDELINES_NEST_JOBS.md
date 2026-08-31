@@ -42,7 +42,7 @@ timers cannot give a multi-instance deployment.
 - **Polling claimer, not push.** Delivery is a poll loop with batch claiming,
   priority + due-time ordering, and stuck-job reclaim. LISTEN/NOTIFY-style push
   is out of scope for the 0.x line.
-- Support line: Node `>=20`, NestJS `11.x`, Drizzle `0.44`/`0.45`,
+- Support line: Node `>=22`, NestJS `11.x`, Drizzle `0.44`/`0.45`,
   `@nestjs-cls/transactional` `3.x`, `better-sqlite3` `11.x`/`12.x`/`13.x`.
   **Peer majors are widened, never swapped**: the devDependency stays on the
   newest major that still installs on the OLDEST supported Node (today 12.x,
