@@ -42,14 +42,74 @@ timers cannot give a multi-instance deployment.
 - **Polling claimer, not push.** Delivery is a poll loop with batch claiming,
   priority + due-time ordering, and stuck-job reclaim. LISTEN/NOTIFY-style push
   is out of scope for the 0.x line.
-- Support line: Node `>=22`, NestJS `11.x`, Drizzle `0.44`/`0.45`,
+- Support line: Node `>=22` (`>=22.12` on the NestJS 12 end — see the Node
+  floor bullet below), NestJS `11.x`/`12.x`, Drizzle `0.44`/`0.45`,
   `@nestjs-cls/transactional` `3.x`, `better-sqlite3` `11.x`/`12.x`/`13.x`.
   **Peer majors are widened, never swapped**: the devDependency stays on the
-  newest major that still installs on the OLDEST supported Node (today 12.x,
-  because `better-sqlite3` 13 requires Node `>=22`), and a dedicated CI leg
-  exercises the newest supported major so both ends of the range are tested
-  rather than assumed. A dependabot PR that bumps such a devDependency past
-  that line is declined — merging it would silently drop a supported Node.
+  newest major that still installs on the OLDEST supported Node, and a
+  dedicated CI leg exercises the newest supported major so both ends of the
+  range are tested rather than assumed. A dependabot PR that bumps such a
+  devDependency past that line is declined — merging it would silently drop a
+  supported Node. `better-sqlite3` is the worked example: 13 requires Node
+  `>=22`, which kept the devDependency on 12.x until the Node 20 sunset (#29);
+  the bump to 13 is a separate dependabot PR (#26), and until it lands the
+  `better-sqlite3-latest-major` CI leg is what tests the 13 end.
+- **NestJS 12 (peer `^11.0.0 || ^12.0.0`) follows the same recipe.** The
+  devDependencies and the lockfile stay on 11 — that is what `npm ci` and the
+  default suite test — and the `nestjs-latest-major` CI leg installs the 12
+  set on top with `npm install --no-save --workspaces --include-workspace-root`
+  and re-runs the suite AND the samples. Three details of that leg are
+  load-bearing, each learned by watching the naive version pass for the wrong
+  reason:
+  - `--workspaces --include-workspace-root`, not `--workspace-root`. With the
+    latter npm satisfies each workspace's own `^11` range by nesting an 11
+    copy under `packages/jobs/node_modules` and
+    `sample/00-showcase/node_modules`, so the suite and the sample run against
+    11 while the root reports 12. `scripts/check-resolved-nestjs-major.mjs 12`
+    runs in the leg and fails it if any workspace resolves another major — a
+    green leg is a claim about 12 only because of that check. Nothing here
+    may `require('@nestjs/<pkg>/package.json')` to read a version: the 12
+    exports map routes `./*` to `./*.js` and that call throws.
+  - The `nestjs-cls` family carries its own `@nestjs/core` peer range and
+    admits 12 only from `nestjs-cls` 6.3.0 / `@nestjs-cls/transactional`
+    3.3.0 / `@nestjs-cls/transactional-adapter-drizzle-orm` 1.5.0 (all
+    released 2026-09-04); earlier minors declare `>= 10 < 12` and npm
+    ERESOLVEs. The leg installs those minors alongside the 12 set, and a
+    consumer on 12 needs them too (the README compatibility table says so).
+    Never hide such a conflict with `--legacy-peer-deps` — a leg that needs
+    it is reporting an unsupported combination, not a flaky install.
+  - **NestJS 12 is ESM-only.** `@nestjs/common` and `@nestjs/core` publish
+    `"type": "module"` with an exports map of `.`, `./internal`, `./*.js` and
+    `./*` → `./*.js`. A deep import of a *file* (`@nestjs/core/injector/
+    constants`) still resolves; a deep import of a *directory index*
+    (`@nestjs/common/interfaces`) does not, because ESM never resolves a
+    directory through `./*`. This package has no deep `@nestjs/*` imports and
+    must keep it that way: import from the package roots only. If an internal
+    is ever genuinely needed, land it together with the test the kafka and
+    trpc repos carry — one that scans the source for every
+    `@nestjs/<pkg>/<subpath>` import and asserts the subpath resolves to a
+    real file inside `node_modules/@nestjs/<pkg>`, never a directory — in the
+    same PR, not after.
+- **The Node floor is per NestJS end.** NestJS 12 is ESM-only, and this
+  CommonJS package (and the `ts-node` sample) loads it through Node's
+  `require(esm)`, which is behind a flag before Node 22.12.0 (and 20.19.0,
+  below this package's floor). So the 12 end of the range needs Node
+  `>=22.12` while `engines` stays `>=22`: it describes the whole peer range,
+  and the 11 end runs on any Node 22. Node 22.0–22.11 satisfies `engines` and
+  still cannot load NestJS 12, which is why every place that states the floor
+  — the support line above, the three compatibility tables (root README,
+  package README, quick-start), the changelog — carries the `>=22.12`
+  qualifier for 12 instead of leaving `>=22` to imply it. Raising `engines` to
+  `>=22.12` would be a floor change for NestJS 11 users and is a separate
+  decision, not part of widening the peer range. NestJS 12's own `engines`
+  says `>= 20` and does not enforce any of this; the qualifier is ours.
+- **Lifecycle hook order changed in 12**: hooks now run by component
+  hierarchy level rather than registration order. Nothing in this package may
+  assume a cross-provider order between `onModuleInit` /
+  `onApplicationBootstrap` / the shutdown hooks, and no test may pin one. The
+  only hook today is `JobsHandlerExplorer.onApplicationBootstrap`, which reads
+  the container through `DiscoveryService` and depends on no other provider's
+  hook having run — keep it that way when adding hooks.
 
 ### 2. Public API
 - `JobsModule.forRoot({ drizzleInstanceToken, store })` / `forRootAsync(...)`.
