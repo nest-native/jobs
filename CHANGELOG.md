@@ -8,6 +8,8 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.3.0
+
 - **NestJS 12 is now an allowed peer** (`@nestjs/common` / `@nestjs/core`
   `^11.0.0 || ^12.0.0`). Nothing in the package changed: the whole suite, 100%
   coverage, typecheck, build and the showcase sample run unmodified on 12.0.1.
