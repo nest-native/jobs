@@ -8,6 +8,21 @@ package release is useful for users.
 
 ## Unreleased
 
+- **NestJS 12 is now an allowed peer** (`@nestjs/common` / `@nestjs/core`
+  `^11.0.0 || ^12.0.0`). Nothing in the package changed: the whole suite, 100%
+  coverage, typecheck, build and the showcase sample run unmodified on 12.0.1.
+  Isolated major-version review: 12 is ESM-only with an exports map that no
+  longer resolves directory indexes — this package imports only from the
+  `@nestjs/*` roots, so it is unaffected — and 12 runs lifecycle hooks by
+  hierarchy level, an order this package never depended on. Two things a
+  consumer on 12 needs: Node `>=22.12` when loading NestJS from CommonJS
+  (`require(esm)`), and the `nestjs-cls` family at `nestjs-cls` >= 6.3.0 /
+  `@nestjs-cls/transactional` >= 3.3.0 / the drizzle adapter >= 1.5.0 — earlier
+  minors declare `@nestjs/core >= 10 < 12` and npm refuses the tree. As with
+  `better-sqlite3` 13, the range is widened, not moved: the devDependencies
+  stay on 11 and a new CI leg (`nestjs-latest-major`) installs 12 on top and
+  runs the suite and the samples against it, with a check that every
+  workspace really resolved 12 rather than a nested 11.
 - **Tooling: the cognitive complexity gate moved from ESLint to Biome.** No
   change to the published package — this repo only ever used ESLint for
   `sonarjs/cognitive-complexity`, and `@typescript-eslint/parser` was there

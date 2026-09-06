@@ -23,6 +23,18 @@ The published package declares a single runtime dependency —
 schedules. Nest, Drizzle,
 and your driver are peer dependencies you already control.
 
+### Compatibility
+
+| Peer | Supported range | Notes |
+| --- | --- | --- |
+| Node.js | `>=22` | a CommonJS app loads NestJS 12 through `require(esm)`, which needs `>=22.12` |
+| `@nestjs/common`, `@nestjs/core` | `^11.0.0 \|\| ^12.0.0` | 12 is ESM-only; both majors run the full suite and the samples in CI |
+| `@nestjs-cls/transactional` | `^3.0.0` | on NestJS 12 you need `>=3.3.0` (with `nestjs-cls >=6.3.0`) — earlier minors declare `@nestjs/core >= 10 < 12` |
+| `drizzle-orm` | `^0.44.0 \|\| ^0.45.0` | |
+| `better-sqlite3` | `^11.0.0 \|\| ^12.0.0 \|\| ^13.0.0` | optional; 13 requires Node `>=22` |
+| `pg` | `^8.0.0` | optional |
+| `mysql2` | `^3.0.0` | optional |
+
 ## 2. Add the `jobs` table to your schema
 
 Import the dialect's table definition and add it to your Drizzle schema

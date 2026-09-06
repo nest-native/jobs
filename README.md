@@ -33,6 +33,18 @@ npm install @nest-native/jobs
 npm install drizzle-orm @nestjs-cls/transactional better-sqlite3   # or pg / mysql2
 ```
 
+### Compatibility
+
+| Peer | Supported range | Notes |
+| --- | --- | --- |
+| Node.js | `>=22` | a CommonJS app loads NestJS 12 through `require(esm)`, which needs `>=22.12` |
+| `@nestjs/common`, `@nestjs/core` | `^11.0.0 \|\| ^12.0.0` | 12 is ESM-only; tested by a dedicated CI leg |
+| `@nestjs-cls/transactional` | `^3.0.0` | on NestJS 12 you need `>=3.3.0` (with `nestjs-cls >=6.3.0`) — earlier minors declare `@nestjs/core >= 10 < 12` |
+| `drizzle-orm` | `^0.44.0 \|\| ^0.45.0` | |
+| `better-sqlite3` | `^11.0.0 \|\| ^12.0.0 \|\| ^13.0.0` | optional; 13 requires Node `>=22` |
+| `pg` | `^8.0.0` | optional |
+| `mysql2` | `^3.0.0` | optional |
+
 ## Entry points
 
 | Import | Contents |
@@ -101,7 +113,10 @@ If you need tens of thousands of jobs per second, sandboxed processors, or a das
 Every PR runs the full gate — build, typecheck, coverage with `c8` enforced at
 100% for statements, branches, functions, and lines, cognitive complexity
 enforcement (Biome, threshold `15`), tarball validation, sample version sync,
-and a supply-chain audit:
+and a supply-chain audit — plus two peer-major legs that install
+`better-sqlite3` 13 and NestJS 12 on top of the default install and
+re-run the suite (and, for NestJS 12, the samples), so both ends of every
+published peer range are tested rather than assumed:
 
 ```bash
 npm run ci
