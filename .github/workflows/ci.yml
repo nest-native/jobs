@@ -263,6 +263,56 @@ jobs:
       - name: Run the suite against better-sqlite3 13
         run: npm test
 
+  nestjs-latest-major:
+    name: NestJS 12 compatibility (Node 22)
+    runs-on: ubuntu-latest
+    # The published peer range allows @nestjs/common and @nestjs/core
+    # ^11 || ^12, but the devDependencies and the lockfile stay on 11 so the
+    # default suite keeps testing that end. This leg installs the 12 set on top
+    # with --no-save and is what makes the 12 end a tested claim. Three details
+    # are load-bearing:
+    #   - `--workspaces --include-workspace-root`, not `--workspace-root`: with
+    #     the latter npm honours each workspace's own ^11 range by nesting an 11
+    #     copy under packages/jobs and sample/00-showcase, so the suite and the
+    #     sample silently run against 11 while the root reports 12. The check
+    #     script below fails the leg if that ever happens again.
+    #   - nestjs-cls, @nestjs-cls/transactional and the drizzle adapter come
+    #     along at the first minors whose own peer range admits NestJS 12
+    #     (6.3.0 / 3.3.0 / 1.5.0); the lockfile's earlier minors declare
+    #     `@nestjs/core >= 10 < 12` and ERESOLVE against 12.
+    #   - the version print reads the manifest by path: the 12 exports map
+    #     routes `./*` to `./*.js`, so `require('@nestjs/core/package.json')`
+    #     throws on 12.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install with NestJS 12
+        run: |
+          npm install --no-save --workspaces --include-workspace-root \
+            @nestjs/common@^12.0.0 @nestjs/core@^12.0.0 \
+            @nestjs/platform-express@^12.0.0 @nestjs/testing@^12.0.0 \
+            nestjs-cls@^6.3.0 @nestjs-cls/transactional@^3.3.0 \
+            @nestjs-cls/transactional-adapter-drizzle-orm@^1.5.0
+          node -e "console.log('@nestjs/core', require('./node_modules/@nestjs/core/package.json').version)"
+
+      - name: Prove every workspace resolves NestJS 12
+        run: node scripts/check-resolved-nestjs-major.mjs 12
+
+      - name: Run the suite against NestJS 12
+        run: npm test
+
+      - name: Build package
+        run: npm run build --workspace @nest-native/jobs
+
+      - name: Run sample matrix against NestJS 12
+        run: npm run ci:sample
+
   release-and-security:
     name: Release and security checks
     runs-on: ubuntu-latest
