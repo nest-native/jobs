@@ -37,8 +37,8 @@ jobs:
       - name: Typecheck package
         run: npm run typecheck --workspace @nest-native/jobs
 
-  package-test-node-20:
-    name: Package tests/coverage (Node 20)
+  package-test-node-22:
+    name: Package tests/coverage (Node 22)
     runs-on: ubuntu-latest
     # No external DB services: the suite runs SQLite in-memory (better-sqlite3)
     # and Postgres in-process (pglite), so coverage is fully hermetic.
@@ -245,10 +245,11 @@ jobs:
   better-sqlite3-latest-major:
     name: better-sqlite3 13 compatibility (Node 22)
     runs-on: ubuntu-latest
-    # The published peer range allows better-sqlite3 ^11 || ^12 || ^13, but the
-    # devDependency stays on 12.x so the Node-20 legs above remain installable
-    # (better-sqlite3 13 requires Node >=22). This leg is what makes the v13 end
-    # of that range a tested claim rather than an assumption.
+    # The published peer range allows better-sqlite3 ^11 || ^12 || ^13 while the
+    # devDependency is still on 12.x: 13 requires Node >=22, which kept it out
+    # until the Node 20 sunset (#29), and the bump to 13 is a separate dependabot
+    # PR (#26). Until that lands, this leg is what makes the v13 end of the range
+    # a tested claim rather than an assumption.
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

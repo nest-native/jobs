@@ -42,14 +42,18 @@ timers cannot give a multi-instance deployment.
 - **Polling claimer, not push.** Delivery is a poll loop with batch claiming,
   priority + due-time ordering, and stuck-job reclaim. LISTEN/NOTIFY-style push
   is out of scope for the 0.x line.
-- Support line: Node `>=22`, NestJS `11.x`/`12.x`, Drizzle `0.44`/`0.45`,
+- Support line: Node `>=22` (`>=22.12` on the NestJS 12 end — see the Node
+  floor bullet below), NestJS `11.x`/`12.x`, Drizzle `0.44`/`0.45`,
   `@nestjs-cls/transactional` `3.x`, `better-sqlite3` `11.x`/`12.x`/`13.x`.
   **Peer majors are widened, never swapped**: the devDependency stays on the
-  newest major that still installs on the OLDEST supported Node (today 12.x,
-  because `better-sqlite3` 13 requires Node `>=22`), and a dedicated CI leg
-  exercises the newest supported major so both ends of the range are tested
-  rather than assumed. A dependabot PR that bumps such a devDependency past
-  that line is declined — merging it would silently drop a supported Node.
+  newest major that still installs on the OLDEST supported Node, and a
+  dedicated CI leg exercises the newest supported major so both ends of the
+  range are tested rather than assumed. A dependabot PR that bumps such a
+  devDependency past that line is declined — merging it would silently drop a
+  supported Node. `better-sqlite3` is the worked example: 13 requires Node
+  `>=22`, which kept the devDependency on 12.x until the Node 20 sunset (#29);
+  the bump to 13 is a separate dependabot PR (#26), and until it lands the
+  `better-sqlite3-latest-major` CI leg is what tests the 13 end.
 - **NestJS 12 (peer `^11.0.0 || ^12.0.0`) follows the same recipe.** The
   devDependencies and the lockfile stay on 11 — that is what `npm ci` and the
   default suite test — and the `nestjs-latest-major` CI leg installs the 12
@@ -86,6 +90,19 @@ timers cannot give a multi-instance deployment.
     `@nestjs/<pkg>/<subpath>` import and asserts the subpath resolves to a
     real file inside `node_modules/@nestjs/<pkg>`, never a directory — in the
     same PR, not after.
+- **The Node floor is per NestJS end.** NestJS 12 is ESM-only, and this
+  CommonJS package (and the `ts-node` sample) loads it through Node's
+  `require(esm)`, which is behind a flag before Node 22.12.0 (and 20.19.0,
+  below this package's floor). So the 12 end of the range needs Node
+  `>=22.12` while `engines` stays `>=22`: it describes the whole peer range,
+  and the 11 end runs on any Node 22. Node 22.0–22.11 satisfies `engines` and
+  still cannot load NestJS 12, which is why every place that states the floor
+  — the support line above, the three compatibility tables (root README,
+  package README, quick-start), the changelog — carries the `>=22.12`
+  qualifier for 12 instead of leaving `>=22` to imply it. Raising `engines` to
+  `>=22.12` would be a floor change for NestJS 11 users and is a separate
+  decision, not part of widening the peer range. NestJS 12's own `engines`
+  says `>= 20` and does not enforce any of this; the qualifier is ours.
 - **Lifecycle hook order changed in 12**: hooks now run by component
   hierarchy level rather than registration order. Nothing in this package may
   assume a cross-provider order between `onModuleInit` /

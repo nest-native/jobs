@@ -14,9 +14,10 @@ package release is useful for users.
   Isolated major-version review: 12 is ESM-only with an exports map that no
   longer resolves directory indexes — this package imports only from the
   `@nestjs/*` roots, so it is unaffected — and 12 runs lifecycle hooks by
-  hierarchy level, an order this package never depended on. Two things a
-  consumer on 12 needs: Node `>=22.12` when loading NestJS from CommonJS
-  (`require(esm)`), and the `nestjs-cls` family at `nestjs-cls` >= 6.3.0 /
+  hierarchy level, an order this package never depended on. The 12 end of the
+  range needs Node.js `>=22.12`, where `require(esm)` is no longer behind a
+  flag; `engines` stays `>=22` because the 11 end does not need more. On 12 you
+  also need the `nestjs-cls` family at `nestjs-cls` >= 6.3.0 /
   `@nestjs-cls/transactional` >= 3.3.0 / the drizzle adapter >= 1.5.0 — earlier
   minors declare `@nestjs/core >= 10 < 12` and npm refuses the tree. As with
   `better-sqlite3` 13, the range is widened, not moved: the devDependencies
