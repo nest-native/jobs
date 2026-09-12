@@ -51,7 +51,9 @@ usual NestJS build, and this package itself — loads it through Node's
 `require(esm)`, which is behind a flag before Node.js 22.12.0, so NestJS 12
 needs Node.js `>=22.12`. `engines` stays `>=22` because the 11 end does not
 need more; Node 22.0–22.11 satisfies it and still cannot load NestJS 12. CI's
-NestJS 12 leg runs on a current 22.x.
+NestJS 12 leg runs on a current 22.x. Both ends of the NestJS range are tested
+claims: the `11 floor` CI leg pins `11.0.0` exactly (nothing this package uses
+was added by a later 11.x) and the `12` leg floats on `^12`.
 
 ## Entry points
 
@@ -121,10 +123,13 @@ If you need tens of thousands of jobs per second, sandboxed processors, or a das
 Every PR runs the full gate — build, typecheck, coverage with `c8` enforced at
 100% for statements, branches, functions, and lines, cognitive complexity
 enforcement (Biome, threshold `15`), tarball validation, sample version sync,
-and a supply-chain audit — plus two peer-major legs that install
-`better-sqlite3` 13 and NestJS 12 on top of the default install and
-re-run the suite (and, for NestJS 12, the samples), so both ends of every
-published peer range are tested rather than assumed:
+and a supply-chain audit — plus peer-major legs: one installs `better-sqlite3`
+13 on top of the default install and re-runs the suite, and the `nestjs-compat`
+matrix installs each end of the NestJS range (`11.0.0` pinned exactly, and
+`^12`) in every workspace, proves every workspace resolves exactly that and
+every peer range in the NestJS ecosystem is satisfied, and re-runs the suite
+and the samples — so both ends of every published peer range are tested
+rather than assumed:
 
 ```bash
 npm run ci

@@ -8,6 +8,18 @@ package release is useful for users.
 
 ## Unreleased
 
+- **Both ends of the NestJS peer range are now CI legs.** The single
+  `nestjs-latest-major` job that installed `^12` is replaced by a
+  `nestjs-compat` matrix: an `11 floor` leg pinned exactly to `11.0.0` (the
+  oldest graph the published range can produce, with the reason next to the
+  pin) and a `12` leg on `^12.0.0`. Each leg runs
+  `scripts/check-nestjs-resolution.mjs` (replacing
+  `check-resolved-nestjs-major.mjs`), which proves the exact version from
+  inside every workspace and checks every peer range in the NestJS ecosystem
+  against the final tree (npm overrides a peer conflict it can override with
+  a warning and exit 0). The same script runs against the lockfile in
+  `release:check`. No published range changed.
+
 ## 0.3.0
 
 - **NestJS 12 is now an allowed peer** (`@nestjs/common` / `@nestjs/core`
