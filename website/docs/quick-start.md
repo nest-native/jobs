@@ -41,7 +41,9 @@ usual NestJS build, and this package itself — loads it through Node's
 `require(esm)`, which is behind a flag before Node.js 22.12.0, so NestJS 12
 needs Node.js `>=22.12`. `engines` stays `>=22` because the 11 end does not
 need more; Node 22.0–22.11 satisfies it and still cannot load NestJS 12. CI's
-NestJS 12 leg runs on a current 22.x.
+NestJS 12 leg runs on a current 22.x. Both ends of the NestJS range are tested
+claims: the `11 floor` CI leg pins `11.0.0` exactly (nothing this package uses
+was added by a later 11.x) and the `12` leg floats on `^12`.
 
 ## 2. Add the `jobs` table to your schema
 

@@ -55,29 +55,56 @@ timers cannot give a multi-instance deployment.
   the bump to 13 is a separate dependabot PR (#26), and until it lands the
   `better-sqlite3-latest-major` CI leg is what tests the 13 end.
 - **NestJS 12 (peer `^11.0.0 || ^12.0.0`) follows the same recipe.** The
-  devDependencies and the lockfile stay on 11 — that is what `npm ci` and the
-  default suite test — and the `nestjs-latest-major` CI leg installs the 12
-  set on top with `npm install --no-save --workspaces --include-workspace-root`
-  and re-runs the suite AND the samples. Three details of that leg are
-  load-bearing, each learned by watching the naive version pass for the wrong
+  devDependencies and the lockfile stay on an 11.x in the middle of the range
+  — that is what `npm ci` and the default suite test — and the `nestjs-compat`
+  CI matrix makes the two *ends* tested claims: one entry per end installs it
+  on top of the lockfile with `npm install --no-save --workspaces
+  --include-workspace-root` and re-runs the suite AND the samples. The
+  `11 floor` entry pins `11.0.0` exactly, with the reason next to the pin
+  (this package imports `@nestjs/*` roots only and uses nothing 11.x-added);
+  the `12` entry floats on `^12.0.0`. A floor is an install-graph fact, not a
+  source fact — sibling `@nestjs/*` packages carry their own peer lines
+  (`@nestjs/platform-fastify` 11.0.0 and 11.0.1 shipped peering `^10`; every
+  `@nestjs/swagger@11.x` peers `common ^11.0.1`), so a repo that declares one
+  pins it separately and its framework floor is the oldest graph npm can
+  actually produce. Such floors are not peer-range corrections (no consumer
+  can reach the versions below them), and the published range changes only
+  if the suite actually fails at a floor. Three details of the leg are
+  load-bearing, each learned by watching a naive version pass for the wrong
   reason:
   - `--workspaces --include-workspace-root`, not `--workspace-root`. With the
     latter npm satisfies each workspace's own `^11` range by nesting an 11
     copy under `packages/jobs/node_modules` and
     `sample/00-showcase/node_modules`, so the suite and the sample run against
-    11 while the root reports 12. `scripts/check-resolved-nestjs-major.mjs 12`
-    runs in the leg and fails it if any workspace resolves another major — a
-    green leg is a claim about 12 only because of that check. Nothing here
-    may `require('@nestjs/<pkg>/package.json')` to read a version: the 12
-    exports map routes `./*` to `./*.js` and that call throws.
+    11 while the root reports the leg's version.
+  - `scripts/check-nestjs-resolution.mjs <spec>` runs before the leg tests
+    anything and is the gate: it requires the *exact* pinned version from
+    inside every workspace (a downgrade that silently no-ops leaves the
+    lockfile's 11.x in place, and "still 11" passes a major check), fails on
+    nested copies, and checks every peer range in the NestJS ecosystem —
+    every installed package at any depth that is `@nestjs/*` or peers on
+    one, this package's own published ranges included — against the tree the
+    suite will run on. The same script runs with no argument in
+    `release:check`, against the lockfile. It is the gate because npm gives
+    you nothing better: a peer conflict npm can override is `npm warn
+    ERESOLVE overriding peer dependency` plus exit 0, which neither `npm ls`
+    nor `--strict-peer-deps` reports afterwards — and grepping the install
+    log for that warning is not a gate either, because npm also prints it for
+    transitional states that end coherent (replacing `@nestjs/*` under the
+    `nestjs-cls` line, whose peers admit both majors, prints a batch on the
+    12 leg for a tree the check then proves clean). Nothing here may
+    `require('@nestjs/<pkg>/package.json')` to read a version: the 12 exports
+    map routes `./*` to `./*.js` and that call throws.
   - The `nestjs-cls` family carries its own `@nestjs/core` peer range and
     admits 12 only from `nestjs-cls` 6.3.0 / `@nestjs-cls/transactional`
     3.3.0 / `@nestjs-cls/transactional-adapter-drizzle-orm` 1.5.0 (all
     released 2026-09-04); earlier minors declare `>= 10 < 12` and npm
-    ERESOLVEs. The leg installs those minors alongside the 12 set, and a
-    consumer on 12 needs them too (the README compatibility table says so).
-    Never hide such a conflict with `--legacy-peer-deps` — a leg that needs
-    it is reporting an unsupported combination, not a flaky install.
+    ERESOLVEs. The devDependencies sit on those minors, whose `>= 10 < 13`
+    serves both ends unchanged, so the overlay does not name them and the
+    check verifies their peers on both legs. A consumer on 12 needs them too
+    (the README compatibility table says so). Never hide such a conflict with
+    `--legacy-peer-deps` — a leg that needs it is reporting an unsupported
+    combination, not a flaky install.
   - **NestJS 12 is ESM-only.** `@nestjs/common` and `@nestjs/core` publish
     `"type": "module"` with an exports map of `.`, `./internal`, `./*.js` and
     `./*` → `./*.js`. A deep import of a *file* (`@nestjs/core/injector/
@@ -103,6 +130,25 @@ timers cannot give a multi-instance deployment.
   `>=22.12` would be a floor change for NestJS 11 users and is a separate
   decision, not part of widening the peer range. NestJS 12's own `engines`
   says `>= 20` and does not enforce any of this; the qualifier is ours.
+- **The default major flips on a trigger, not per PR.** The devDependencies
+  and the lockfile move from 11 to 12 when either NestJS 12 exceeds 50% of
+  `@nestjs/core`'s weekly downloads or NestJS 11 stops receiving patches,
+  whichever comes first. Read the split from
+  `https://api.npmjs.org/versions/@nestjs%2Fcore/last-week` (on 2026-09-12:
+  11 at 71%, 10 at 19%, 12 at 5%). NestJS has no LTS; the previous major has
+  received patches for roughly a year after the next one shipped. Flipping
+  means the `12` matrix entry becomes the default install, the `11 floor`
+  entry stays, and the standing grouped dependabot PR for the peer set is
+  merged. Until then that PR stays open as the signal that the upgrade is one
+  merge away — a green run is not a reason to merge it.
+- **Dual CommonJS/ESM publishing is a dated non-goal; revisit in 2027.**
+  Every community NestJS library that supports 12 today (nestjs-cls,
+  nestjs-pino, the OpenTelemetry and throttler packages) publishes CommonJS
+  and loads 12 through `require(esm)` exactly as this package does, and no
+  consumer has asked for ESM output. An ESM or dual build is a breaking
+  change with a real cost and no demonstrated benefit, so do not start one
+  "while at it". Revisit when a consumer cannot load the package, or when
+  those community libraries move.
 - **Lifecycle hook order changed in 12**: hooks now run by component
   hierarchy level rather than registration order. Nothing in this package may
   assume a cross-provider order between `onModuleInit` /
