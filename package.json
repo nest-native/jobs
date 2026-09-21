@@ -56,7 +56,7 @@
     "@nestjs/core": "^11.1.29",
     "@nestjs/platform-express": "^11.1.29",
     "@nestjs/testing": "^11.1.29",
-    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/core": "^10.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.6.1",
     "@types/pg": "^8.23.1",
