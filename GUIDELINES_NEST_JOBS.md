@@ -254,7 +254,7 @@ timers cannot give a multi-instance deployment.
   release and vulnerable — and arrives through `@docusaurus/mdx-loader`, so the
   gate was unfixable by any dependency change. Fix docs advisories when a fix
   exists, and find them in the `security:audit:docs` output — Dependabot
-  surfaces neither kind here. Its alerts showed none of the 29 advisories an
+  will not surface them. Its alerts showed none of the 29 advisories an
   `npm audit` of `website/` found on 2026-09-29, and its version updates (the
   `/website` entry in `.github/dependabot.yml`) bump direct dependencies,
   never the transitive ones those advisories sat in. `audit fix` cleared the
