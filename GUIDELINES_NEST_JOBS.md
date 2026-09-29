@@ -252,8 +252,16 @@ timers cannot give a multi-instance deployment.
   package-only. Trigger: `image-size` (GHSA-w3rx-r6r6-pgpr,
   GHSA-5p2g-fcmc-qvqq) has NO patched version — 2.0.2 is both the latest
   release and vulnerable — and arrives through `@docusaurus/mdx-loader`, so the
-  gate was unfixable by any dependency change. Dependabot still tracks the
-  website tree; fix docs advisories when a fix exists.
+  gate was unfixable by any dependency change. Fix docs advisories when a fix
+  exists, and find them in the `security:audit:docs` output — Dependabot
+  will not surface them. Its alerts showed none of the 29 advisories an
+  `npm audit` of `website/` found on 2026-09-29, and its version updates (the
+  `/website` entry in `.github/dependabot.yml`) bump direct dependencies,
+  never the transitive ones those advisories sat in. `audit fix` cleared the
+  fixable ones; the rest came from `uuid` < 11.1.1 under `sockjs` (the dev
+  server only), which `website/package.json` overrides to `^11.1.1` —
+  `sockjs` calls only `uuid.v4()`, which 11.x keeps in CommonJS. Drop the
+  override once Docusaurus's own chain moves past it.
 
 - **Strictness scope.** The non-negotiables (100% coverage, complexity ≤ 15,
   the single-runtime-dep rule (`croner` only, §3), isolated major-version
