@@ -8,6 +8,8 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.4.0
+
 - **Concurrent workers no longer run the same job twice.** On Postgres and
   MySQL the claim selected due jobs without locking them, then updated them
   by id, so two workers claiming at the same moment could both take, and both
