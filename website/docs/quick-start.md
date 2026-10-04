@@ -32,8 +32,8 @@ and your driver are peer dependencies you already control.
 | `@nestjs-cls/transactional` | `^3.0.0 \|\| ^4.0.0` | 4.x needs `nestjs-cls` `^7` (and the Drizzle adapter `^2`); on NestJS 12 with 3.x you need `>=3.3.0` (with `nestjs-cls >=6.3.0`) — earlier minors declare `@nestjs/core >= 10 < 12` |
 | `drizzle-orm` | `^0.44.0 \|\| ^0.45.0` | |
 | `better-sqlite3` | `^11.0.0 \|\| ^12.0.0 \|\| ^13.0.0` | optional; 13 requires Node `>=22` |
-| `pg` | `^8.0.0` | optional |
-| `mysql2` | `^3.0.0` | optional |
+| `pg` | `^8.0.0` | optional; give the `Pool` an `error` listener, as node-postgres requires (the Postgres stores warn once without one) |
+| `mysql2` | `^3.0.0` | optional; needs MySQL 8.0.1+ (for `SKIP LOCKED`), with `binlog_format` ROW or MIXED when binary logging is on |
 
 The Node.js floor depends on which end of the NestJS range you are on. NestJS
 11 runs on any Node.js `>=22`. NestJS 12 is ESM-only; a CommonJS app — the

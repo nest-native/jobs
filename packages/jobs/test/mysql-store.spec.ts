@@ -46,10 +46,12 @@ function jobsMock(options: JobsMockOptions = {}) {
   const captured: {
     insert?: Record<string, unknown>;
     set?: Record<string, unknown>;
+    lock?: unknown[];
+    transactionConfig?: unknown;
   } = {};
   const selectRows = options.selectRows ?? [];
   // A projected `select({ id })` is the claimer's candidate query (terminated
-  // by `.orderBy().limit()`); a bare `select()` is the enqueue read-back /
+  // by `.orderBy().limit().for()`); a bare `select()` is the enqueue read-back /
   // dedup lookup (awaited directly — Drizzle builders are thenables) or the
   // claim re-read (ordered, then awaited).
   const buildSelect = (projection?: unknown) => ({
@@ -59,7 +61,14 @@ function jobsMock(options: JobsMockOptions = {}) {
         return {
           orderBy: () =>
             projection
-              ? { limit: () => Promise.resolve(options.candidates ?? []) }
+              ? {
+                  limit: () => ({
+                    for: (...lock: unknown[]) => {
+                      captured.lock = lock;
+                      return Promise.resolve(options.candidates ?? []);
+                    },
+                  }),
+                }
               : Promise.resolve(selectRows),
           then: (
             onFulfilled?: (value: JobRow[]) => unknown,
@@ -85,7 +94,10 @@ function jobsMock(options: JobsMockOptions = {}) {
         return { where: () => Promise.resolve([{}]) };
       },
     }),
-    transaction: (run: (tx: unknown) => unknown) => run(db),
+    transaction: (run: (tx: unknown) => unknown, config?: unknown) => {
+      captured.transactionConfig = config;
+      return run(db);
+    },
   };
   return { db: db as unknown, captured };
 }
@@ -190,6 +202,17 @@ describe('MysqlJobStore claimBatch', () => {
     assert.equal(captured.set?.status, 'processing');
     assert.equal(captured.set?.claimedBy, cfg.workerInstanceId);
     assert.ok(typeof captured.set?.claimedAt === 'string');
+  });
+
+  test('locks its candidates with SKIP LOCKED, at READ COMMITTED', async () => {
+    // Two workers claiming at once must split the backlog, and InnoDB's default
+    // REPEATABLE READ would gap-lock every concurrent enqueue.
+    const { db, captured } = jobsMock({ candidates: [] });
+
+    await store.claimBatch(db, cfg);
+
+    assert.deepEqual(captured.lock, ['update', { skipLocked: true }]);
+    assert.deepEqual(captured.transactionConfig, { isolationLevel: 'read committed' });
   });
 
   test('returns [] with no update when nothing is due', async () => {

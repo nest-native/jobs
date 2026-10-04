@@ -21,6 +21,21 @@ import {
 const MYSQL_URL = process.env.JOBS_MYSQL_URL;
 const cfg = { ...DEFAULT_RUNNER_CONFIG, batchSize: 50, stuckTimeoutMs: 1_000 };
 
+const sortedIds = (rows: { id: string }[]): string[] => rows.map((r) => r.id).sort();
+
+/** `promise`'s value, or 'blocked' when it has not settled within `ms`. */
+async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | 'blocked'> {
+  let timer: NodeJS.Timeout | undefined;
+  const blocked = new Promise<'blocked'>((resolve) => {
+    timer = setTimeout(() => resolve('blocked'), ms);
+  });
+  try {
+    return await Promise.race([promise, blocked]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const MYSQL_DDL = [
   'DROP TABLE IF EXISTS jobs',
   'DROP TABLE IF EXISTS job_schedules',
@@ -45,6 +60,10 @@ const MYSQL_DDL = [
 describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
   let connection: Awaited<ReturnType<typeof import('mysql2/promise').createConnection>>;
   let db: Awaited<ReturnType<typeof buildMysqlDb>>;
+  // The concurrency specs need several connections: on the single one above,
+  // two claims would simply run one after the other.
+  let pool: import('mysql2/promise').Pool;
+  let poolDb: Awaited<ReturnType<typeof buildMysqlDb>>;
   const store = new MysqlJobStore();
 
   async function buildMysqlDb(conn: unknown) {
@@ -57,10 +76,57 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     connection = await mysql.createConnection(MYSQL_URL as string);
     for (const stmt of MYSQL_DDL) await connection.query(stmt);
     db = await buildMysqlDb(connection);
+    pool = mysql.createPool({ uri: MYSQL_URL as string, connectionLimit: 4 });
+    poolDb = await buildMysqlDb(pool);
   });
 
   after(async () => {
     await connection?.end();
+    await pool?.end();
+  });
+
+  async function seed(count: number) {
+    await connection.query('DELETE FROM jobs');
+    const rows: { id: string }[] = [];
+    for (let i = 0; i < count; i += 1) {
+      rows.push(await store.enqueue(db, { name: 'claims', payload: { i }, runAt: new Date(Date.now() - 1_000) }));
+    }
+    return rows;
+  }
+
+  test('a claim skips jobs another claim holds instead of taking them too', async () => {
+    const rows = await seed(10);
+    const holder = await pool.getConnection();
+    // At READ COMMITTED like a real claim: under REPEATABLE READ this scan of a
+    // small table would lock every row, not just the five.
+    await holder.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+    await holder.query('BEGIN');
+    await holder.query('SELECT id FROM jobs WHERE id IN (?) FOR UPDATE', [rows.slice(0, 5).map((r) => r.id)]);
+    const claim = store.claimBatch(poolDb, cfg);
+    try {
+      const claimed = await settleWithin(claim, 2_000);
+      assert.notEqual(claimed, 'blocked', 'the claim waited on jobs another claim holds');
+      assert.deepEqual(sortedIds(claimed as { id: string }[]), sortedIds(rows.slice(5)));
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+      await claim;
+    }
+  });
+
+  test('two concurrent claimers never claim the same job', async () => {
+    for (let round = 0; round < 5; round += 1) {
+      await seed(10);
+      // Two open connections up front, so the two claims really overlap.
+      await Promise.all([pool.query('SELECT 1'), pool.query('SELECT 1')]);
+      const [a, b] = await Promise.all([
+        store.claimBatch(poolDb, { ...cfg, workerInstanceId: 'worker-A' }),
+        store.claimBatch(poolDb, { ...cfg, workerInstanceId: 'worker-B' }),
+      ]);
+      const ids = [...a, ...b].map((r) => r.id);
+      assert.equal(ids.length, 10, `round ${round}: every job claimed`);
+      assert.equal(new Set(ids).size, 10, `round ${round}: a job was claimed twice`);
+    }
   });
 
   test('enqueue -> claim (ordered) -> complete, with JSON payload', async () => {
