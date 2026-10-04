@@ -8,6 +8,8 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.5.1
+
 - **A failed transition no longer strands the rest of the batch.** When
   recording an outcome fails (the database went away mid-batch), the tick
   throws, and the batch's jobs that had not run yet used to wait out
