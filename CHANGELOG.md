@@ -8,6 +8,8 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.5.0
+
 - **A worker whose claim was taken over can no longer record the job's
   outcome.** Transitions matched on the job's id alone: a worker that stalled
   past `stuckTimeoutMs` (a long handler, a GC pause, a lost network) could still
