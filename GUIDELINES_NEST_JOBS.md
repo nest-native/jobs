@@ -44,7 +44,8 @@ timers cannot give a multi-instance deployment.
   is out of scope for the 0.x line.
 - Support line: Node `>=22` (`>=22.12` on the NestJS 12 end — see the Node
   floor bullet below), NestJS `11.x`/`12.x`, Drizzle `0.44`/`0.45`,
-  `@nestjs-cls/transactional` `3.x`, `better-sqlite3` `11.x`/`12.x`/`13.x`.
+  `@nestjs-cls/transactional` `3.x`/`4.x` (4.x with `nestjs-cls` 7),
+  `better-sqlite3` `11.x`/`12.x`/`13.x`.
   **Peer majors are widened, never swapped**: the devDependency stays on the
   newest major that still installs on the OLDEST supported Node, and a
   dedicated CI leg exercises the newest supported major so both ends of the
