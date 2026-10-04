@@ -52,15 +52,29 @@ timers cannot give a multi-instance deployment.
     never through drizzle's `transaction()`. That one leaves the checked-out
     client without an `error` listener and sends BEGIN outside its cleanup, so
     a dropped connection crashed the process or leaked a pool slot.
-  - Transitions still match on the job id alone: a worker that stalled past
-    `stuckTimeoutMs` can record an outcome after another worker took the job
-    over. That is the documented at-least-once, not a bug to paper over;
-    fencing transitions on the claim (as `@nest-native/messaging` 0.8 does) is
-    a breaking `JobStore` change for its own release.
-  - A concurrency fix lands with a real-database spec that fails on the
-    unfixed code: hold the contended rows from a second connection, or warm
-    the pool so two claims really overlap. PGlite is one connection and
-    cannot show a race.
+- **Outcomes are fenced on the claim (0.5+).** `markCompleted`, `retry` and
+  `markFailed` take the `JobClaim` (`id`, `claimedBy`, `claimedAt`) and apply
+  only while the job is still `processing` under exactly that claim, resolving
+  `false` otherwise; the claimer counts those as `TickReport.lost`. Before 0.5
+  they matched on the id alone, so a worker that stalled past `stuckTimeoutMs`
+  could complete, retry or fail a job another worker was running.
+  - On Postgres each transition runs in its own READ COMMITTED transaction
+    (`fenced()` over `readCommitted()`): under a SERIALIZABLE default the fenced
+    UPDATEs abort each other (40001) while both claims still hold their jobs,
+    and under REPEATABLE READ a concurrent write to the row fails the
+    transition. The real-Postgres specs pin both.
+  - A batch held past `stuckTimeoutMs` skips its remaining jobs (the first
+    always runs), and a failed completion write throws out of `tick()` rather
+    than counting as a failed run.
+  - `RunnerConfig` resolves through `resolveRunnerConfig()`: an `undefined`
+    key keeps its default (an unset `WORKER_ID` must not claim under no owner,
+    which no fenced transition could match), and invalid values throw, at
+    `runWorkerLoop` start as well as per tick.
+- **A concurrency fix lands with a real-database spec that fails on the
+  unfixed code**: hold the contended rows from a second connection, warm the
+  pool so two claims really overlap, or set the server default isolation per
+  pool (`options: '-c default_transaction_isolation=serializable'`). PGlite is
+  one connection and cannot show a race.
 - Support line: Node `>=22` (`>=22.12` on the NestJS 12 end — see the Node
   floor bullet below), NestJS `11.x`/`12.x`, Drizzle `0.44`/`0.45`,
   `@nestjs-cls/transactional` `3.x`/`4.x` (4.x with `nestjs-cls` 7),

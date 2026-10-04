@@ -177,11 +177,11 @@ await app.listen(3000);
 
 // Same process, or a dedicated worker process — your call.
 const controller = new AbortController();
-void runWorkerLoop(app.get(JobsClaimer), {
+runWorkerLoop(app.get(JobsClaimer), {
   pollIntervalMs: 1_000,
   signal: controller.signal,
   onError: (error) => logger.error(error),
-});
+}).catch((error) => logger.error('jobs worker stopped', error));
 app.enableShutdownHooks();
 process.on('SIGTERM', () => controller.abort());
 ```

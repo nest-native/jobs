@@ -61,17 +61,18 @@ describe('drainJobs', () => {
     completed,
     retried: 0,
     failed: 0,
+    lost: 0,
   });
   const fakeClaimer = (reports: TickReport[]): JobsClaimer =>
     ({ tick: async () => reports.shift() ?? report(0) }) as unknown as JobsClaimer;
 
   test('ticks until a tick claims nothing and aggregates the reports', async () => {
     const claimer = fakeClaimer([
-      { scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0 },
-      { scheduled: 0, claimed: 1, completed: 0, retried: 0, failed: 1 },
+      { scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0, lost: 0 },
+      { scheduled: 0, claimed: 2, completed: 0, retried: 0, failed: 1, lost: 1 },
     ]);
     const total = await drainJobs(claimer);
-    assert.deepEqual(total, { scheduled: 0, claimed: 3, completed: 1, retried: 1, failed: 1 });
+    assert.deepEqual(total, { scheduled: 0, claimed: 4, completed: 1, retried: 1, failed: 1, lost: 1 });
   });
 
   test('passes runner overrides through to every tick', async () => {

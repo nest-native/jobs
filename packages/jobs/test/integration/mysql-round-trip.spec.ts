@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { after, before, describe, test } from 'node:test';
 import { eq } from 'drizzle-orm';
 import { DEFAULT_RUNNER_CONFIG } from '../../jobs-claimer.service';
+import type { JobClaim, JobRow } from '../../interfaces';
 import {
   jobs as mysqlJobs,
   jobSchedules as mysqlJobSchedules,
@@ -22,6 +23,13 @@ const MYSQL_URL = process.env.JOBS_MYSQL_URL;
 const cfg = { ...DEFAULT_RUNNER_CONFIG, batchSize: 50, stuckTimeoutMs: 1_000 };
 
 const sortedIds = (rows: { id: string }[]): string[] => rows.map((r) => r.id).sort();
+
+/** The claim `claimBatch` stamped on `row`, as the claimer holds it. */
+const claimOf = (row: JobRow): JobClaim => ({
+  id: row.id,
+  claimedBy: row.claimedBy as string,
+  claimedAt: row.claimedAt as string,
+});
 
 /** `promise`'s value, or 'blocked' when it has not settled within `ms`. */
 async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | 'blocked'> {
@@ -84,6 +92,13 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     await connection?.end();
     await pool?.end();
   });
+
+  /** Claims the due jobs and returns `id`'s claim. */
+  async function claim(id: string, workerInstanceId = cfg.workerInstanceId): Promise<JobClaim> {
+    const mine = (await store.claimBatch(db, { ...cfg, workerInstanceId })).find((r) => r.id === id);
+    assert.ok(mine, `job ${id} was not claimed`);
+    return claimOf(mine);
+  }
 
   async function seed(count: number) {
     await connection.query('DELETE FROM jobs');
@@ -154,7 +169,7 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     );
     assert.ok(claimed.every((j) => j.status === 'processing'));
 
-    await store.markCompleted(db, high.id);
+    assert.equal(await store.markCompleted(db, claimOf(claimed[0]!)), true);
     const [completed] = await db
       .select()
       .from(mysqlJobs)
@@ -185,7 +200,7 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     assert.notEqual(other.id, first.id);
 
     // retry keeps the key claimed…
-    await store.retry(db, first.id, 60_000, 'flaky');
+    assert.equal(await store.retry(db, await claim(first.id), 0, 'flaky'), true);
     const stillActive = await store.enqueue(db, {
       name: 'email.digest',
       payload: {},
@@ -194,7 +209,7 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     assert.equal(stillActive.id, first.id);
 
     // …and failing releases it, so a fresh job can claim the key.
-    await store.markFailed(db, first.id, 'gave up');
+    assert.equal(await store.markFailed(db, await claim(first.id), 'gave up'), true);
     const [failed] = await db.select().from(mysqlJobs).where(eq(mysqlJobs.id, first.id));
     assert.equal(failed.status, 'failed');
     assert.equal(failed.uniqueKey, null);
@@ -218,6 +233,24 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     const reclaimed = claimed.find((j) => j.id === job.id);
     assert.ok(reclaimed, 'stuck job reclaimed');
     assert.equal(reclaimed?.claimedBy, cfg.workerInstanceId);
+  });
+
+  test('a worker whose stuck claim was taken over cannot move the job', async () => {
+    const [row] = await seed(1);
+    const mine = await claim(row!.id, 'worker-A');
+    await connection.query('UPDATE jobs SET claimed_at = ? WHERE id = ?', [
+      new Date(Date.now() - 10 * cfg.stuckTimeoutMs).toISOString(),
+      row!.id,
+    ]);
+    const theirs = await claim(row!.id, 'worker-B');
+    assert.equal(await store.markCompleted(db, mine), false);
+    assert.equal(await store.retry(db, mine, 0, 'late'), false);
+    assert.equal(await store.markFailed(db, mine, 'late'), false);
+    const [owned] = await db.select().from(mysqlJobs).where(eq(mysqlJobs.id, row!.id));
+    assert.equal(owned?.status, 'processing');
+    assert.equal(owned?.claimedBy, 'worker-B');
+    assert.equal(owned?.attempts, 0);
+    assert.equal(await store.markCompleted(db, theirs), true);
   });
 
   test('schedules: upsert -> claim (CAS + occurrence insert) -> overlap no-op, on real MySQL', async () => {

@@ -127,6 +127,7 @@ class PermanentError extends Error {
 | throws `RetryableError` | retried — after `delayMs` if given, else jittered backoff |
 | throws anything else | retried with jittered backoff until `maxAttempts`, then `failed` |
 | no handler registered for `name` | `failed` immediately (`PermanentError` internally) |
+| another worker took the job over first | nothing recorded — counted as `lost` (see below) |
 
 Backoff: `min(baseBackoffMs * 2^attempts, maxBackoffMs) + jitter(0..baseBackoffMs)`.
 
@@ -143,6 +144,7 @@ interface TickReport {
   completed: number;
   retried: number;
   failed: number;
+  lost: number;      // claimed, but no outcome recorded here (0.5+, see below)
 }
 
 interface ResolvedRunnerConfig {
@@ -153,7 +155,17 @@ interface ResolvedRunnerConfig {
   maxBackoffMs: number;     // default 60_000
 }
 type RunnerConfig = Partial<ResolvedRunnerConfig>;
+
+// Applies overrides over the defaults, as tick() does, and throws on a value
+// that would break claiming: call it at startup to check a worker's config.
+function resolveRunnerConfig(overrides?: RunnerConfig | null): ResolvedRunnerConfig;
 ```
+
+A `RunnerConfig` key set to `undefined` keeps its default, so
+`{ workerInstanceId: process.env.WORKER_ID }` with the variable unset claims
+under the default id. An invalid value throws: an empty `workerInstanceId`, a
+`batchSize` that is not a positive integer, a `stuckTimeoutMs` that is not a
+positive number, or a negative backoff. Numeric strings count as invalid.
 
 `tick()` claims one batch (the store opens its own transaction; ordering is
 `priority DESC, available_at ASC`; `processing` rows older than
@@ -168,14 +180,28 @@ type RunnerConfig = Partial<ResolvedRunnerConfig>;
 - **A stalled claim is taken over.** A job still `processing` after
   `stuckTimeoutMs` is claimed again, so give every worker the same
   `stuckTimeoutMs`, longer than the slowest handler, and keep their clocks in
-  sync. That takeover is where at-least-once delivery comes from: a worker that
-  stalled past the timeout can still finish the job, and record its outcome,
-  after another worker has started it again.
-- **On a node-postgres `Pool`**, the claim runs on a client the store checks
-  out itself, so a connection the database drops mid-claim (a failover,
-  `pg_terminate_backend`) rejects the tick instead of crashing the process.
-  Give the pool an `error` listener, as node-postgres requires: the store logs a
-  warning once when it has none.
+  sync. Each worker reclaims by its own clock and its own value, so the
+  smallest value in the fleet is the one in force.
+- **Outcomes are recorded under the claim (0.5+).** A job's outcome applies only
+  while the job is still `processing` under the exact claim that took it: its
+  `claimedBy` and `claimedAt`. A worker whose claim was taken over writes
+  nothing; the job counts in `TickReport.lost`, with a warning, and its new
+  owner runs it and records the outcome. A batch held longer than
+  `stuckTimeoutMs` skips its remaining jobs, also as `lost`; the first job of a
+  batch always runs. A steady non-zero `lost` means batches take longer than
+  `stuckTimeoutMs`: raise it or lower `batchSize`.
+- **Delivery stays at-least-once.** A handler that outlives its claim has
+  already run when the new owner runs the job again. Make handlers idempotent,
+  or key their side effects on `ctx.jobId`.
+- **A failed completion write throws.** When the store cannot record a
+  completion (the database went away), the tick throws instead of counting it
+  as a failed run: the job, still claimed, runs again once its claim goes
+  stale, and no attempt is spent.
+- **On a node-postgres `Pool`**, the claims and every transition run on a
+  client the store checks out itself, so a connection the database drops
+  mid-statement (a failover, `pg_terminate_backend`) rejects the tick instead of
+  crashing the process. Give the pool an `error` listener, as node-postgres
+  requires: the store logs a warning once when it has none.
 
 ```ts
 function runWorkerLoop(claimer: JobsClaimer, options?: WorkerLoopOptions): Promise<void>;
@@ -191,6 +217,9 @@ interface WorkerLoopOptions {
 
 The loop re-ticks immediately while batches are non-empty (drain-fast), idles
 `pollIntervalMs` when the queue is empty, and resolves once `signal` aborts.
+An invalid `runner` config rejects at once, before the first tick (0.5+): keep
+the promise and handle that rejection — discarded with `void`, it ends the
+process as an unhandled rejection without reaching `onError`.
 
 ## The JobStore seam
 
@@ -198,13 +227,31 @@ The loop re-ticks immediately while batches are non-empty (drain-fast), idles
 interface JobStore {
   enqueue(db: unknown, input: EnqueueJobInput<object>): JobRow | Promise<JobRow>;
   claimBatch(db: unknown, cfg: ResolvedRunnerConfig): Promise<JobRow[]>;
-  markCompleted(db: unknown, id: string): Promise<void>;             // terminal, clears uniqueKey
-  retry(db: unknown, id: string, delayMs: number, lastError?: string): Promise<void>; // keeps uniqueKey
-  markFailed(db: unknown, id: string, reason: string): Promise<void>; // terminal, clears uniqueKey
+  markCompleted(db: unknown, claim: JobClaim): Promise<boolean>;             // terminal, clears uniqueKey
+  retry(db: unknown, claim: JobClaim, delayMs: number, lastError?: string): Promise<boolean>; // keeps uniqueKey
+  markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean>; // terminal, clears uniqueKey
+}
+
+interface JobClaim {
+  readonly id: string;
+  readonly claimedBy: string;
+  readonly claimedAt: string;
 }
 ```
 
 The engine never touches SQL — implement this seam to bring your own dialect.
+A custom store owes the engine three things:
+
+- `claimBatch` never returns one job to two concurrent callers, and returns
+  every job as its claiming UPDATE left it, with the `claimedBy` and
+  `claimedAt` it wrote. The claimer refuses a job without a string stamp
+  (counted as `lost`, logged as an error), but it cannot tell a stale stamp
+  from a fresh one: a store that returns jobs as read before its UPDATE runs
+  each reclaimed job again after every stuck timeout.
+- The three transitions apply only while the job is `processing` under exactly
+  that `claimedBy` and `claimedAt`, and resolve `false`, writing nothing, once
+  the claim has been taken over.
+- A database error rejects; it never reads as `false`.
 Ship stores:
 
 | Store | Import | Execution |

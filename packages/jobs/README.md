@@ -104,10 +104,11 @@ export class WelcomeEmailHandler implements JobHandler {
 
 // worker (same process or a dedicated one)
 const controller = new AbortController();
-void runWorkerLoop(app.get(JobsClaimer), { signal: controller.signal });
+runWorkerLoop(app.get(JobsClaimer), { signal: controller.signal })
+  .catch((error) => console.error('jobs worker stopped', error));
 ```
 
-Delivery is **at-least-once**: a worker crash mid-job means the row is reclaimed after `stuckTimeoutMs` and run again. Make handlers idempotent or key their side effects on `ctx.jobId`.
+Delivery is **at-least-once**: a worker crash mid-job means the row is reclaimed after `stuckTimeoutMs` and run again. Make handlers idempotent or key their side effects on `ctx.jobId`. Outcomes are recorded under the claim: a worker whose claim was taken over records nothing, and the job counts as `lost` in its `TickReport`.
 
 ### The uniqueKey contract
 

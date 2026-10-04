@@ -4,6 +4,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { resolveAvailableAt } from '../../enqueue-input';
 import type {
   EnqueueJobInput,
+  JobClaim,
   JobRow,
   JobStore,
   ResolvedRunnerConfig,
@@ -31,6 +32,19 @@ function hasCode(error: unknown, code: string): boolean {
     (error as { code?: unknown }).code === code
   );
 }
+
+/**
+ * Matches the job only while it is `processing` under exactly this claim, so a
+ * transition from a worker whose claim was taken over after the stuck timeout
+ * writes nothing, even when a later claim reused the same `workerInstanceId`.
+ */
+const heldBy = (claim: JobClaim) =>
+  and(
+    eq(jobs.id, claim.id),
+    eq(jobs.status, 'processing'),
+    eq(jobs.claimedBy, claim.claimedBy),
+    eq(jobs.claimedAt, claim.claimedAt),
+  );
 
 /**
  * SQLite (better-sqlite3) job store. Every method runs **synchronously** —
@@ -123,8 +137,8 @@ export class SqliteJobStore implements JobStore {
     return Promise.resolve(rows);
   }
 
-  markCompleted(db: unknown, id: string): Promise<void> {
-    (db as Db)
+  markCompleted(db: unknown, claim: JobClaim): Promise<boolean> {
+    const { changes } = (db as Db)
       .update(jobs)
       .set({
         status: 'completed',
@@ -133,14 +147,14 @@ export class SqliteJobStore implements JobStore {
         // Terminal → release the active-dedup key.
         uniqueKey: null,
       })
-      .where(eq(jobs.id, id))
+      .where(heldBy(claim))
       .run();
-    return Promise.resolve();
+    return Promise.resolve(changes > 0);
   }
 
-  retry(db: unknown, id: string, delayMs: number, lastError?: string): Promise<void> {
+  retry(db: unknown, claim: JobClaim, delayMs: number, lastError?: string): Promise<boolean> {
     const nextAvailable = new Date(Date.now() + delayMs).toISOString();
-    (db as Db)
+    const { changes } = (db as Db)
       .update(jobs)
       .set({
         status: 'pending',
@@ -151,13 +165,13 @@ export class SqliteJobStore implements JobStore {
         lastError: lastError ?? null,
         // Still active → the uniqueKey stays claimed.
       })
-      .where(eq(jobs.id, id))
+      .where(heldBy(claim))
       .run();
-    return Promise.resolve();
+    return Promise.resolve(changes > 0);
   }
 
-  markFailed(db: unknown, id: string, reason: string): Promise<void> {
-    (db as Db)
+  markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean> {
+    const { changes } = (db as Db)
       .update(jobs)
       .set({
         status: 'failed',
@@ -167,8 +181,8 @@ export class SqliteJobStore implements JobStore {
         // Terminal → release the active-dedup key.
         uniqueKey: null,
       })
-      .where(eq(jobs.id, id))
+      .where(heldBy(claim))
       .run();
-    return Promise.resolve();
+    return Promise.resolve(changes > 0);
   }
 }
