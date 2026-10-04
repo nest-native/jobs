@@ -8,6 +8,40 @@ package release is useful for users.
 
 ## Unreleased
 
+- **Concurrent workers no longer run the same job twice.** On Postgres and
+  MySQL the claim selected due jobs without locking them, then updated them
+  by id, so two workers claiming at the same moment could both take, and both
+  run, the same jobs.
+  - The claim now locks its candidates with `FOR UPDATE SKIP LOCKED` inside a
+    READ COMMITTED transaction, so concurrent claims split the backlog.
+    READ COMMITTED also keeps InnoDB's REPEATABLE READ gap locks from making
+    every concurrent enqueue wait.
+  - New real-Postgres specs (CI now runs a Postgres service next to MySQL) and
+    new real-MySQL specs hold jobs from a second connection and run two
+    claimers on warmed pools; both fail on the previous claim.
+  - A worker that stalls past `stuckTimeoutMs` can still record an outcome
+    after another worker took the job over: that takeover is the documented
+    at-least-once delivery. Give every worker the same `stuckTimeoutMs`,
+    longer than the slowest handler.
+- **Breaking: MySQL 8.0.1 or later is now required**, for `SKIP LOCKED`. With
+  binary logging on, `binlog_format` must also be ROW (the MySQL 8 default) or
+  MIXED: InnoDB refuses writes from the claim's READ COMMITTED transaction
+  under `binlog_format=STATEMENT`.
+- **A dropped Postgres connection no longer crashes the worker.** The job claim
+  and the schedule claim ran through drizzle's `transaction()`, which leaves
+  the checked-out client without an `error` listener and sends BEGIN outside
+  its cleanup: a failover, a restart or `pg_terminate_backend` during a claim
+  killed the process, and a connection lost at BEGIN was never returned to the
+  pool. On a node-postgres `Pool` both claims now run on a client the store
+  checks out itself: it listens for errors while the client is out, rolls back
+  without hiding the original error, and returns a broken client with its
+  error so the pool discards it. The tick rejects instead, and
+  `runWorkerLoop` reports it through `onError`. Give the pool an `error`
+  listener, as node-postgres requires: the stores log a warning once when it
+  has none. Your own `@Transactional` bodies still go through drizzle's
+  `transaction()`; a per-client listener
+  (`pool.on('connect', (client) => client.on('error', handle))`) keeps a
+  dropped connection there from crashing the process too.
 - **`@nestjs-cls/transactional` 4 is supported.** The peer range is now
   `^3.0.0 || ^4.0.0`; transactional 4 needs `nestjs-cls` 7 and, for Drizzle,
   `@nestjs-cls/transactional-adapter-drizzle-orm` 2. Their only breaking change

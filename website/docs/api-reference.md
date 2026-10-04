@@ -159,6 +159,24 @@ type RunnerConfig = Partial<ResolvedRunnerConfig>;
 `priority DESC, available_at ASC`; `processing` rows older than
 `stuckTimeoutMs` are reclaimed) and dispatches each job to its handler.
 
+**Running several workers.** Any number of workers can drain one table:
+
+- **Claims are exclusive.** The Postgres and MySQL stores lock the jobs they
+  claim with `FOR UPDATE SKIP LOCKED` at READ COMMITTED, so concurrent claims
+  split the backlog instead of running the same job twice; SQLite runs one
+  write transaction at a time.
+- **A stalled claim is taken over.** A job still `processing` after
+  `stuckTimeoutMs` is claimed again, so give every worker the same
+  `stuckTimeoutMs`, longer than the slowest handler, and keep their clocks in
+  sync. That takeover is where at-least-once delivery comes from: a worker that
+  stalled past the timeout can still finish the job, and record its outcome,
+  after another worker has started it again.
+- **On a node-postgres `Pool`**, the claim runs on a client the store checks
+  out itself, so a connection the database drops mid-claim (a failover,
+  `pg_terminate_backend`) rejects the tick instead of crashing the process.
+  Give the pool an `error` listener, as node-postgres requires: the store logs a
+  warning once when it has none.
+
 ```ts
 function runWorkerLoop(claimer: JobsClaimer, options?: WorkerLoopOptions): Promise<void>;
 

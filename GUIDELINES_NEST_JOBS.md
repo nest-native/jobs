@@ -42,10 +42,30 @@ timers cannot give a multi-instance deployment.
 - **Polling claimer, not push.** Delivery is a poll loop with batch claiming,
   priority + due-time ordering, and stuck-job reclaim. LISTEN/NOTIFY-style push
   is out of scope for the 0.x line.
+- **Claims are exclusive.** A store's `claimBatch` never hands one job to two
+  concurrent callers: `FOR UPDATE SKIP LOCKED` on Postgres and MySQL, inside a
+  READ COMMITTED transaction (under InnoDB's default REPEATABLE READ the
+  locking read gap-locks every concurrent enqueue). Before 0.4 the claim
+  selected unlocked and updated by id, and two workers ran the same jobs.
+  - On a node-postgres `Pool` the Postgres stores run their transactions on a
+    client they check out themselves (`dialects/postgres/transaction.ts`),
+    never through drizzle's `transaction()`. That one leaves the checked-out
+    client without an `error` listener and sends BEGIN outside its cleanup, so
+    a dropped connection crashed the process or leaked a pool slot.
+  - Transitions still match on the job id alone: a worker that stalled past
+    `stuckTimeoutMs` can record an outcome after another worker took the job
+    over. That is the documented at-least-once, not a bug to paper over;
+    fencing transitions on the claim (as `@nest-native/messaging` 0.8 does) is
+    a breaking `JobStore` change for its own release.
+  - A concurrency fix lands with a real-database spec that fails on the
+    unfixed code: hold the contended rows from a second connection, or warm
+    the pool so two claims really overlap. PGlite is one connection and
+    cannot show a race.
 - Support line: Node `>=22` (`>=22.12` on the NestJS 12 end — see the Node
   floor bullet below), NestJS `11.x`/`12.x`, Drizzle `0.44`/`0.45`,
   `@nestjs-cls/transactional` `3.x`/`4.x` (4.x with `nestjs-cls` 7),
-  `better-sqlite3` `11.x`/`12.x`/`13.x`.
+  `better-sqlite3` `11.x`/`12.x`/`13.x`, MySQL `8.0.1+` (for `SKIP LOCKED`;
+  with binary logging on, `binlog_format` ROW or MIXED).
   **Peer majors are widened, never swapped**: the devDependency stays on the
   newest major that still installs on the OLDEST supported Node, and a
   dedicated CI leg exercises the newest supported major so both ends of the
@@ -235,8 +255,9 @@ timers cannot give a multi-instance deployment.
 
   [ts7]: https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6.0
 - Tests cover all three dialects hermetically (sqlite in-memory, pglite
-  in-process, mysql mock-db) plus a gated real-MySQL integration spec
-  (`JOBS_MYSQL_URL`).
+  in-process, mysql mock-db) plus gated real-MySQL and real-Postgres
+  integration specs (`JOBS_MYSQL_URL`, `JOBS_POSTGRES_URL`), which carry the
+  concurrency and connection-loss specs.
 
 ### 5. Security Review Requirements (MANDATORY)
 - Every PR includes an explicit supply-chain + application-security pass.
@@ -281,20 +302,22 @@ timers cannot give a multi-instance deployment.
 ## Local Full-Mode Verification (optional infra + mutation testing)
 
 Everything in this section is **opt-in and local-only**. Plain `npm test` and
-`test:cov` run without Docker and skip the gated spec (CI covers it in a
-dedicated job with its own MySQL service); forks work out of the box.
+`test:cov` run without Docker and skip the gated specs (CI covers them in a
+dedicated job with its own MySQL and Postgres services); forks work out of the
+box.
 **CI never runs mutation testing** — it is an on-demand, local-only gate.
 
-### Gated I/O spec (real MySQL)
+### Gated I/O specs (real MySQL and Postgres)
 
-- `npm run infra:up` — a disposable container from `compose.yaml`
-  (MySQL on `127.0.0.1:33063`). Needs Docker.
-- `npm run test:full` — the hermetic suite plus the gated MySQL round-trip
-  spec against that container (`JOBS_MYSQL_URL` is set inline to the compose
-  URL).
-- `npm run infra:down` — removes the container and its volume.
-- Using your own database instead: export `JOBS_MYSQL_URL` and run
-  `npm run test:integration` — the spec gates purely on the env var.
+- `npm run infra:up` — disposable containers from `compose.yaml`
+  (MySQL on `127.0.0.1:33063`, Postgres on `127.0.0.1:54323`). Needs Docker.
+- `npm run test:full` — the hermetic suite plus the gated MySQL and Postgres
+  round-trip specs against those containers (`JOBS_MYSQL_URL` and
+  `JOBS_POSTGRES_URL` are set inline to the compose URLs).
+- `npm run infra:down` — removes the containers and their volumes.
+- Using your own databases instead: export `JOBS_MYSQL_URL` and/or
+  `JOBS_POSTGRES_URL` and run `npm run test:integration` — each spec gates
+  purely on its env var.
 
 **AI agents working on this repo**: when Docker is available, run
 `npm run infra:up && npm run test:full` before opening a PR that touches
@@ -322,7 +345,7 @@ one file you changed and use hand-verification (below):
 - `npm run test:mutation:full` — every mutant from scratch (`--force`).
 - `STRYKER_MUTATE='packages/jobs/dialects/**,packages/jobs/tokens.ts'` —
   comma-separated globs to scope a run to the files a change touched.
-- `STRYKER_WITH_INFRA=1` — each mutant also runs the gated MySQL spec
+- `STRYKER_WITH_INFRA=1` — each mutant also runs the gated MySQL and Postgres specs
   (`npm run test:mutant:full` per mutant, concurrency forced to 1 because the
   spec shares one database; run `npm run infra:up` first). Slow by design; use
   it when a change touches store-adjacent code.

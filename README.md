@@ -42,8 +42,8 @@ npm install drizzle-orm @nestjs-cls/transactional better-sqlite3   # or pg / mys
 | `@nestjs-cls/transactional` | `^3.0.0 \|\| ^4.0.0` | 4.x needs `nestjs-cls` `^7` (and the Drizzle adapter `^2`); on NestJS 12 with 3.x you need `>=3.3.0` (with `nestjs-cls >=6.3.0`) — earlier minors declare `@nestjs/core >= 10 < 12` |
 | `drizzle-orm` | `^0.44.0 \|\| ^0.45.0` | |
 | `better-sqlite3` | `^11.0.0 \|\| ^12.0.0 \|\| ^13.0.0` | optional; 13 requires Node `>=22` |
-| `pg` | `^8.0.0` | optional |
-| `mysql2` | `^3.0.0` | optional |
+| `pg` | `^8.0.0` | optional; give the `Pool` an `error` listener, as node-postgres requires (the Postgres stores warn once without one) |
+| `mysql2` | `^3.0.0` | optional; needs MySQL 8.0.1+ (for `SKIP LOCKED`), with `binlog_format` ROW or MIXED when binary logging is on |
 
 The Node.js floor depends on which end of the NestJS range you are on. NestJS
 11 runs on any Node.js `>=22`. NestJS 12 is ESM-only; a CommonJS app — the
@@ -139,11 +139,11 @@ Two **optional, local-only** layers sit on top (neither is required to
 contribute, and forks work without Docker):
 
 - **Full mode** — `npm run infra:up && npm run test:full` runs the gated
-  MySQL round-trip spec against a disposable Docker container
+  MySQL and Postgres round-trip specs against disposable Docker containers
   (`compose.yaml`); `npm run infra:down` cleans up.
 - **Mutation testing** — `npm run test:mutation` (incremental Stryker run;
   `test:mutation:full` re-tests everything). Scope with `STRYKER_MUTATE`,
-  include the gated MySQL spec with `STRYKER_WITH_INFRA=1`. Never runs in CI.
+  include the gated MySQL and Postgres specs with `STRYKER_WITH_INFRA=1`. Never runs in CI.
 
 Details — including the pre-PR ritual and agent instructions — in
 [GUIDELINES_NEST_JOBS.md](GUIDELINES_NEST_JOBS.md#local-full-mode-verification-optional-infra--mutation-testing).

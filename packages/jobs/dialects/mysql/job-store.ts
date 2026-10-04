@@ -110,7 +110,10 @@ export class MysqlJobStore implements JobStore {
           ),
         )
         .orderBy(desc(jobs.priority), asc(jobs.availableAt))
-        .limit(cfg.batchSize);
+        .limit(cfg.batchSize)
+        // FOR UPDATE SKIP LOCKED: two workers claiming at once split the
+        // backlog instead of both taking (and running) the same jobs.
+        .for('update', { skipLocked: true });
       if (candidates.length === 0) return [];
       const ids = candidates.map((c) => c.id);
       await tx
@@ -122,7 +125,10 @@ export class MysqlJobStore implements JobStore {
         .from(jobs)
         .where(inArray(jobs.id, ids))
         .orderBy(desc(jobs.priority), asc(jobs.availableAt));
-    });
+      // READ COMMITTED, not InnoDB's default REPEATABLE READ: there the locking
+      // read also locks the gaps it scans, so every concurrent enqueue INSERT
+      // would wait for the claim to commit.
+    }, { isolationLevel: 'read committed' });
   }
 
   async markCompleted(db: unknown, id: string): Promise<void> {

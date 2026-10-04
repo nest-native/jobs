@@ -9,6 +9,7 @@ import type {
   ScheduleStore,
 } from '../../interfaces';
 import { jobs, jobSchedules } from './schema';
+import { readCommitted } from './transaction';
 
 type Db = NodePgDatabase<Record<string, never>>;
 
@@ -132,7 +133,7 @@ export class PostgresScheduleStore implements ScheduleStore {
     db: unknown,
     claim: ScheduleClaim,
   ): Promise<ScheduleClaimResult> {
-    return (db as Db).transaction(async (tx): Promise<ScheduleClaimResult> => {
+    return readCommitted(db, async (tx): Promise<ScheduleClaimResult> => {
       const cas = await tx
         .update(jobSchedules)
         .set({

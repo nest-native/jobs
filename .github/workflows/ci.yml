@@ -208,12 +208,14 @@ jobs:
             test-step-duration-ms.txt
           if-no-files-found: error
 
-  mysql-integration:
-    name: MySQL integration (real service)
+  integration:
+    name: Real-backend integration (MySQL, PostgreSQL)
     runs-on: ubuntu-latest
-    # The only job with a DB service: it runs the gated real-MySQL round-trip
-    # spec (test/integration), which skips everywhere else because
-    # JOBS_MYSQL_URL is unset. The main suite stays hermetic.
+    # The only job with DB services: it runs the gated real-MySQL and
+    # real-Postgres round-trip specs (test/integration), which skip everywhere
+    # else because JOBS_MYSQL_URL / JOBS_POSTGRES_URL are unset. The main suite
+    # stays hermetic. PGlite, the hermetic Postgres, is a single connection, so
+    # only this job shows what concurrent claims do on Postgres.
     services:
       mysql:
         image: mysql:8.4
@@ -227,6 +229,19 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: jobs
+          POSTGRES_PASSWORD: jobs-ci-password
+          POSTGRES_DB: jobs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U jobs"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
 
     steps:
       - uses: actions/checkout@v7
@@ -237,10 +252,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run gated MySQL round-trip
+      - name: Run the gated MySQL and Postgres round-trips
         run: npm run test:integration
         env:
           JOBS_MYSQL_URL: mysql://root:jobs-ci-password@127.0.0.1:3306/jobs
+          JOBS_POSTGRES_URL: postgres://jobs:jobs-ci-password@127.0.0.1:5432/jobs
 
   better-sqlite3-latest-major:
     name: better-sqlite3 13 compatibility (Node 22)

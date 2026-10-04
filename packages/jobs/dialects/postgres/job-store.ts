@@ -9,6 +9,7 @@ import type {
   ResolvedRunnerConfig,
 } from '../../interfaces';
 import { jobs } from './schema';
+import { readCommitted } from './transaction';
 
 type Db = NodePgDatabase<Record<string, never>>;
 
@@ -93,7 +94,9 @@ export class PostgresJobStore implements JobStore {
     const now = new Date();
     const nowIso = now.toISOString();
     const stuckCutoff = new Date(now.getTime() - cfg.stuckTimeoutMs).toISOString();
-    return (db as Db).transaction(async (tx) => {
+    // FOR UPDATE SKIP LOCKED: two workers claiming at once split the backlog
+    // instead of both taking (and running) the same jobs.
+    return readCommitted(db, async (tx) => {
       const candidates = await tx
         .select({ id: jobs.id })
         .from(jobs)
@@ -104,7 +107,8 @@ export class PostgresJobStore implements JobStore {
           ),
         )
         .orderBy(desc(jobs.priority), asc(jobs.availableAt))
-        .limit(cfg.batchSize);
+        .limit(cfg.batchSize)
+        .for('update', { skipLocked: true });
       if (candidates.length === 0) return [];
       const ids = candidates.map((c) => c.id);
       await tx

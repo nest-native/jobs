@@ -22,3 +22,18 @@ services:
       interval: 2s
       timeout: 3s
       retries: 60
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: nest-jobs-postgres
+    environment:
+      POSTGRES_USER: jobs
+      POSTGRES_PASSWORD: jobs
+      POSTGRES_DB: jobs
+    ports:
+      - '127.0.0.1:54323:5432'
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'jobs']
+      interval: 2s
+      timeout: 3s
+      retries: 60
