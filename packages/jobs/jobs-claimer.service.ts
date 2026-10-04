@@ -32,6 +32,10 @@ const MAX_DATE_OFFSET_MS = 8.64e15;
 const stampShown = (value: unknown): string =>
   typeof value === 'string' ? JSON.stringify(value) : Object.prototype.toString.call(value).slice(8, -1);
 
+// A thrown value as a log line can show it.
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 // A rejected value as the caller wrote it: a string from an env-backed config
 // keeps its quotes, so `"60000" (string)` does not pass for the number 60000.
 const shown = (value: unknown): string =>
@@ -150,12 +154,17 @@ export class JobsClaimer {
     // already have reclaimed its remaining jobs; running them here as well
     // would only run them twice.
     const expired: string[] = [];
-    for (const job of claimed) {
+    for (const [index, job] of claimed.entries()) {
       if (Date.now() - heldSince >= cfg.stuckTimeoutMs) {
         expired.push(job.id);
         continue;
       }
-      report[await this.processOne(job, cfg)] += 1;
+      try {
+        report[await this.processOne(job, cfg)] += 1;
+      } catch (error) {
+        await this.releaseNotRun(claimed.slice(index + 1));
+        throw error;
+      }
     }
     if (expired.length > 0) {
       report.lost += expired.length;
@@ -217,7 +226,7 @@ export class JobsClaimer {
       // A transient store error (connection drop, lock timeout, serialization
       // failure) must NOT kill the schedule: nothing was written, the row is
       // still due, and the next tick retries it naturally.
-      const message = error instanceof Error ? error.message : String(error);
+      const message = messageOf(error);
       this.logger.warn(
         `schedule ${schedule.id} ("${schedule.name}") claim failed, will retry next tick: ${message}`,
       );
@@ -250,6 +259,35 @@ export class JobsClaimer {
     // The tick throws instead, and the job, still claimed, runs again once its
     // claim goes stale.
     return this.settle(job, await this.store.markCompleted(this.db, claim), 'completed');
+  }
+
+  /**
+   * After recording an outcome failed, hands the batch's jobs that have not run
+   * back through the store's optional `release`, so they are available again
+   * at once rather than after `stuckTimeoutMs`. Best effort: the database just
+   * failed, so the first error ends it, and the original error is the one the
+   * tick throws.
+   */
+  private async releaseNotRun(jobs: JobRow[]): Promise<void> {
+    const release = this.store.release?.bind(this.store);
+    if (release === undefined || jobs.length === 0) return;
+    let released = 0;
+    try {
+      for (const { id, claimedBy, claimedAt } of jobs) {
+        if (typeof claimedBy !== 'string' || typeof claimedAt !== 'string') continue;
+        if (await release(this.db, { id, claimedBy, claimedAt })) released += 1;
+      }
+    } catch (error) {
+      this.logger.warn(
+        `could not hand back ${jobs.length - released} job(s) that had not run after a failed transition (${messageOf(error)}); they are reclaimed after stuckTimeoutMs`,
+      );
+      return;
+    }
+    if (released > 0) {
+      this.logger.warn(
+        `handed back ${released} job(s) that had not run after a failed transition, for the next claim to take`,
+      );
+    }
   }
 
   /**
@@ -295,7 +333,7 @@ export class JobsClaimer {
     cfg: ResolvedRunnerConfig,
     error: unknown,
   ): Promise<ProcessOutcome> {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = messageOf(error);
     // Permanent: retrying can never succeed — fail now instead of burning attempts.
     if (error instanceof PermanentError) {
       return this.fail(job, claim, message);

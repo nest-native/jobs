@@ -188,6 +188,7 @@ describe('Postgres round-trip (real service)', { skip: !POSTGRES_URL }, () => {
       row!.id,
     ]);
     const [theirs] = await store.claimBatch(db, { ...cfg, workerInstanceId: 'worker-B' });
+    assert.equal(await store.release(db, claimOf(mine!)), false);
     assert.equal(await store.markCompleted(db, claimOf(mine!)), false);
     assert.equal(await store.retry(db, claimOf(mine!), 0, 'late'), false);
     assert.equal(await store.markFailed(db, claimOf(mine!), 'late'), false);

@@ -44,6 +44,8 @@ interface JobsMockOptions {
   insertError?: unknown;
   /** What an UPDATE reports: 1 while the claim still holds the job, 0 once it was taken over. */
   affectedRows?: number;
+  /** How long the transaction waits for a pooled connection before it runs. */
+  checkoutDelayMs?: number;
 }
 
 function jobsMock(options: JobsMockOptions = {}) {
@@ -104,8 +106,9 @@ function jobsMock(options: JobsMockOptions = {}) {
         };
       },
     }),
-    transaction: (run: (tx: unknown) => unknown, config?: unknown) => {
+    transaction: async (run: (tx: unknown) => unknown, config?: unknown) => {
       captured.transactionConfig = config;
+      await new Promise((resolve) => setTimeout(resolve, options.checkoutDelayMs ?? 0));
       return run(db);
     },
   };
@@ -236,6 +239,25 @@ describe('MysqlJobStore claimBatch', () => {
 const held: JobClaim = { id: 'id-1', claimedBy: 'worker-A', claimedAt: '2026-01-01T00:00:00.000Z' };
 
 describe('MysqlJobStore transitions', () => {
+  test('release hands the job back pending and unclaimed, attempts and key untouched', async () => {
+    const { db, captured } = jobsMock();
+    assert.equal(await store.release(db, held), true);
+    assert.deepEqual(captured.set, { status: 'pending', claimedAt: null, claimedBy: null });
+  });
+
+  test('claimBatch stamps the claim once the connection is checked out', async () => {
+    // A stamp taken before a slow checkout makes the claim look older than it
+    // is, so another worker would treat its jobs as stuck that much sooner.
+    const { db, captured } = jobsMock({
+      candidates: [{ id: 'row-1' }],
+      selectRows: [row({ status: 'processing' })],
+      checkoutDelayMs: 80,
+    });
+    const asked = Date.now();
+    await store.claimBatch(db, cfg);
+    assert.ok(Date.parse(captured.set?.claimedAt as string) >= asked + 70);
+  });
+
   test('markCompleted transitions the row and releases the uniqueKey', async () => {
     const { db, captured } = jobsMock();
     assert.equal(await store.markCompleted(db, held), true);
@@ -272,6 +294,7 @@ describe('MysqlJobStore transitions', () => {
   test('each transition matches the job only while it is processing under the claim', async () => {
     const dialect = new MySqlDialect();
     const transitions = [
+      (db: unknown) => store.release(db, held),
       (db: unknown) => store.markCompleted(db, held),
       (db: unknown) => store.retry(db, held, 0),
       (db: unknown) => store.markFailed(db, held, 'dead'),
@@ -290,6 +313,7 @@ describe('MysqlJobStore transitions', () => {
 
   test('a transition whose claim was taken over writes nothing and resolves false', async () => {
     for (const transition of [
+      (db: unknown) => store.release(db, held),
       (db: unknown) => store.markCompleted(db, held),
       (db: unknown) => store.retry(db, held, 0),
       (db: unknown) => store.markFailed(db, held, 'dead'),

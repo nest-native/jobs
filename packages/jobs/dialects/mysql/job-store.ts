@@ -110,10 +110,13 @@ export class MysqlJobStore implements JobStore {
   }
 
   async claimBatch(db: unknown, cfg: ResolvedRunnerConfig): Promise<JobRow[]> {
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const stuckCutoff = new Date(now.getTime() - cfg.stuckTimeoutMs).toISOString();
     return (db as Db).transaction(async (tx) => {
+      // Stamped once the connection is ours: a checkout that waited on a busy
+      // pool must not leave this claim looking older than it is, or another
+      // worker would treat its jobs as stuck that much sooner.
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const stuckCutoff = new Date(now.getTime() - cfg.stuckTimeoutMs).toISOString();
       const candidates = await tx
         .select({ id: jobs.id })
         .from(jobs)
@@ -177,6 +180,14 @@ export class MysqlJobStore implements JobStore {
         lastError: lastError ?? null,
         // Still active → the uniqueKey stays claimed.
       })
+      .where(heldBy(claim));
+    return result.affectedRows > 0;
+  }
+
+  async release(db: unknown, claim: JobClaim): Promise<boolean> {
+    const [result] = await (db as Db)
+      .update(jobs)
+      .set({ status: 'pending', claimedAt: null, claimedBy: null })
       .where(heldBy(claim));
     return result.affectedRows > 0;
   }

@@ -119,12 +119,15 @@ export class PostgresJobStore implements JobStore {
   }
 
   async claimBatch(db: unknown, cfg: ResolvedRunnerConfig): Promise<JobRow[]> {
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const stuckCutoff = new Date(now.getTime() - cfg.stuckTimeoutMs).toISOString();
     // FOR UPDATE SKIP LOCKED: two workers claiming at once split the backlog
     // instead of both taking (and running) the same jobs.
     return readCommitted(db, async (tx) => {
+      // Stamped once the connection is ours: a checkout that waited on a busy
+      // pool must not leave this claim looking older than it is, or another
+      // worker would treat its jobs as stuck that much sooner.
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const stuckCutoff = new Date(now.getTime() - cfg.stuckTimeoutMs).toISOString();
       const candidates = await tx
         .select({ id: jobs.id })
         .from(jobs)
@@ -186,6 +189,16 @@ export class PostgresJobStore implements JobStore {
           lastError: lastError ?? null,
           // Still active → the uniqueKey stays claimed.
         })
+        .where(heldBy(claim))
+        .returning({ id: jobs.id }),
+    );
+  }
+
+  async release(db: unknown, claim: JobClaim): Promise<boolean> {
+    return fenced(db, (tx) =>
+      tx
+        .update(jobs)
+        .set({ status: 'pending', claimedAt: null, claimedBy: null })
         .where(heldBy(claim))
         .returning({ id: jobs.id }),
     );
