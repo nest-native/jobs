@@ -93,6 +93,8 @@ system**.
 
 Delivery is **at-least-once**: a worker crash mid-job leaves the row in
 `processing`, and after `stuckTimeoutMs` another claim reclaims and re-runs it.
+The stalled worker can no longer record an outcome then: every transition
+applies only under the claim that took the job.
 Make handlers idempotent — key side effects on `ctx.jobId` (the
 [showcase sample](./samples.md) demonstrates the `ON CONFLICT DO NOTHING`
 pattern).

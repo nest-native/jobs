@@ -8,6 +8,68 @@ package release is useful for users.
 
 ## Unreleased
 
+- **A worker whose claim was taken over can no longer record the job's
+  outcome.** Transitions matched on the job's id alone: a worker that stalled
+  past `stuckTimeoutMs` (a long handler, a GC pause, a lost network) could still
+  mark completed, retried or failed a job another worker had reclaimed and was
+  running, overwriting the new owner's outcome. A completion that landed first
+  also released the job's `uniqueKey` while the new owner still ran it.
+  - Every transition now applies only while the job is still `processing`
+    under the exact claim that took it: its `claimedBy` and `claimedAt`. This
+    holds even when two loops share a `workerInstanceId`. A transition that
+    loses this race writes nothing.
+  - On Postgres each transition runs in its own READ COMMITTED transaction,
+    on the same store-managed client as the claim. Under a SERIALIZABLE server
+    default, two workers' transitions would otherwise abort each other while
+    both claims still held their jobs; under REPEATABLE READ, a concurrent
+    write to the job would fail its transition.
+  - Once a batch has been held longer than `stuckTimeoutMs`, the worker skips
+    its remaining jobs instead of running them too. The first job of a batch
+    always runs, so a slow claim still makes progress.
+  - A transition that lost its claim and a job skipped from an expired batch
+    both count in the new `TickReport.lost`, and each logs a warning, with the
+    handler's error when there was one. A steady non-zero count means batches
+    take longer than `stuckTimeoutMs`: raise it or lower `batchSize`.
+  - Delivery stays at-least-once: a handler that outlived its claim has
+    already run when the new owner runs the job again.
+- **Upgrade every worker on a table together.** These guarantees hold once
+  every worker draining a table runs this version: a 0.4.x worker's
+  transitions match on the id alone, so it can still complete, retry or fail a
+  job another worker holds. Stop the 0.4.x workers before starting the new
+  ones, or expect `lost` warnings while both run. The schema is unchanged.
+- **Failing to record a completion no longer counts as a failed run.** A
+  database error from `markCompleted` was handled like a handler failure: it
+  spent an attempt, and on the last one marked a job that had run failed.
+  `tick()` now throws, and the job runs again once its claim goes stale.
+- **A `RunnerConfig` field set to `undefined` keeps its default.**
+  `{ workerInstanceId: process.env.WORKER_ID }` with the variable unset used to
+  claim jobs under no owner; with fenced transitions, no outcome could ever be
+  recorded for them. `resolveRunnerConfig()` is exported, so a worker can check
+  its config at startup.
+  - **Breaking:** invalid values now throw, numeric strings included: an empty
+    `workerInstanceId`, a `batchSize` that is not a positive integer, a
+    `stuckTimeoutMs` that is not a positive number, or a negative backoff.
+    Pass numbers, and leave a field `undefined` to keep its default:
+    `batchSize: env.BATCH_SIZE ? Number(env.BATCH_SIZE) : undefined`.
+  - **Breaking:** `runWorkerLoop` rejects at once on an invalid `runner` config
+    instead of failing every tick. Keep its promise and handle that rejection:
+    discarded with `void`, it ends the process as an unhandled rejection,
+    without reaching `onError`.
+- **Breaking for TypeScript code that constructs `TickReport` values:** add
+  `lost: 0`. `drainJobs` sums it.
+- **Breaking for custom `JobStore` implementations.**
+  - `markCompleted`, `retry` and `markFailed` take the job's claim (`JobClaim`:
+    `{ id, claimedBy, claimedAt }`) instead of its id.
+  - They resolve `true` when they wrote the job and `false` when the claim no
+    longer held it. A database error rejects; it never reads as `false`.
+  - `claimBatch` must never return one job to two concurrent callers, and must
+    return every job as its claiming UPDATE left it, with the `claimedBy` and
+    `claimedAt` it wrote. The claimer refuses a job without a string stamp,
+    counting it as lost with an error, but it cannot tell a stale stamp from a
+    fresh one: a store that returns jobs as read before its UPDATE gets each
+    reclaimed job run again after every stuck timeout.
+  - The shipped stores are updated.
+
 ## 0.4.0
 
 - **Concurrent workers no longer run the same job twice.** On Postgres and

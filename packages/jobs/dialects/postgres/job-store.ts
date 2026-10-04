@@ -4,6 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { resolveAvailableAt } from '../../enqueue-input';
 import type {
   EnqueueJobInput,
+  JobClaim,
   JobRow,
   JobStore,
   ResolvedRunnerConfig,
@@ -31,6 +32,33 @@ function hasCode(error: unknown, code: string): boolean {
     (error as { code?: unknown }).code === code
   );
 }
+
+/**
+ * Matches the job only while it is `processing` under exactly this claim, so a
+ * transition from a worker whose claim was taken over after the stuck timeout
+ * writes nothing, even when a later claim reused the same `workerInstanceId`.
+ */
+const heldBy = (claim: JobClaim) =>
+  and(
+    eq(jobs.id, claim.id),
+    eq(jobs.status, 'processing'),
+    eq(jobs.claimedBy, claim.claimedBy),
+    eq(jobs.claimedAt, claim.claimedAt),
+  );
+
+/**
+ * Runs one fenced transition and reports whether it wrote the job. Each runs in
+ * its own READ COMMITTED transaction, like the claim: under a SERIALIZABLE
+ * server default the fenced UPDATE's scan (on the status index, in steady state)
+ * makes two workers' transitions abort each other (40001) while both claims
+ * still hold their jobs. Under READ COMMITTED an UPDATE that waited on a
+ * reclaim re-checks the fence against the committed row instead, so `false`
+ * means the claim really was taken over, and any error is a real one.
+ */
+const fenced = (
+  db: unknown,
+  update: (tx: Db) => PromiseLike<{ id: string }[]>,
+): Promise<boolean> => readCommitted(db, async (tx) => (await update(tx)).length > 0);
 
 /**
  * Postgres (node-postgres) job store. Every method is **asynchronous** —
@@ -123,51 +151,60 @@ export class PostgresJobStore implements JobStore {
     });
   }
 
-  async markCompleted(db: unknown, id: string): Promise<void> {
-    await (db as Db)
-      .update(jobs)
-      .set({
-        status: 'completed',
-        processedAt: new Date().toISOString(),
-        lastError: null,
-        // Terminal → release the active-dedup key.
-        uniqueKey: null,
-      })
-      .where(eq(jobs.id, id));
+  async markCompleted(db: unknown, claim: JobClaim): Promise<boolean> {
+    return fenced(db, (tx) =>
+      tx
+        .update(jobs)
+        .set({
+          status: 'completed',
+          processedAt: new Date().toISOString(),
+          lastError: null,
+          // Terminal → release the active-dedup key.
+          uniqueKey: null,
+        })
+        .where(heldBy(claim))
+        .returning({ id: jobs.id }),
+    );
   }
 
   async retry(
     db: unknown,
-    id: string,
+    claim: JobClaim,
     delayMs: number,
     lastError?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const nextAvailable = new Date(Date.now() + delayMs).toISOString();
-    await (db as Db)
-      .update(jobs)
-      .set({
-        status: 'pending',
-        attempts: sql`${jobs.attempts} + 1`,
-        availableAt: nextAvailable,
-        claimedAt: null,
-        claimedBy: null,
-        lastError: lastError ?? null,
-        // Still active → the uniqueKey stays claimed.
-      })
-      .where(eq(jobs.id, id));
+    return fenced(db, (tx) =>
+      tx
+        .update(jobs)
+        .set({
+          status: 'pending',
+          attempts: sql`${jobs.attempts} + 1`,
+          availableAt: nextAvailable,
+          claimedAt: null,
+          claimedBy: null,
+          lastError: lastError ?? null,
+          // Still active → the uniqueKey stays claimed.
+        })
+        .where(heldBy(claim))
+        .returning({ id: jobs.id }),
+    );
   }
 
-  async markFailed(db: unknown, id: string, reason: string): Promise<void> {
-    await (db as Db)
-      .update(jobs)
-      .set({
-        status: 'failed',
-        attempts: sql`${jobs.attempts} + 1`,
-        lastError: reason,
-        processedAt: new Date().toISOString(),
-        // Terminal → release the active-dedup key.
-        uniqueKey: null,
-      })
-      .where(eq(jobs.id, id));
+  async markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean> {
+    return fenced(db, (tx) =>
+      tx
+        .update(jobs)
+        .set({
+          status: 'failed',
+          attempts: sql`${jobs.attempts} + 1`,
+          lastError: reason,
+          processedAt: new Date().toISOString(),
+          // Terminal → release the active-dedup key.
+          uniqueKey: null,
+        })
+        .where(heldBy(claim))
+        .returning({ id: jobs.id }),
+    );
   }
 }

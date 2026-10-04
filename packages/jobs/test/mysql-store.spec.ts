@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
+import { MySqlDialect } from 'drizzle-orm/mysql-core';
+import type { SQL } from 'drizzle-orm';
 import { DEFAULT_RUNNER_CONFIG } from '../jobs-claimer.service';
 import { isMysqlUniqueViolation, MysqlJobStore } from '../dialects/mysql';
-import type { JobRow } from '../interfaces';
+import type { JobClaim, JobRow } from '../interfaces';
 
 // There is no in-process MySQL (the pglite equivalent does not exist), so the
 // store methods are exercised against a recording stand-in for a mysql2 Drizzle
@@ -40,12 +42,15 @@ interface JobsMockOptions {
   selectRows?: JobRow[];
   candidates?: { id: string }[];
   insertError?: unknown;
+  /** What an UPDATE reports: 1 while the claim still holds the job, 0 once it was taken over. */
+  affectedRows?: number;
 }
 
 function jobsMock(options: JobsMockOptions = {}) {
   const captured: {
     insert?: Record<string, unknown>;
     set?: Record<string, unknown>;
+    where?: SQL;
     lock?: unknown[];
     transactionConfig?: unknown;
   } = {};
@@ -91,7 +96,12 @@ function jobsMock(options: JobsMockOptions = {}) {
     update: () => ({
       set: (values: Record<string, unknown>) => {
         captured.set = values;
-        return { where: () => Promise.resolve([{}]) };
+        return {
+          where: (where: SQL) => {
+            captured.where = where;
+            return Promise.resolve([{ affectedRows: options.affectedRows ?? 1 }]);
+          },
+        };
       },
     }),
     transaction: (run: (tx: unknown) => unknown, config?: unknown) => {
@@ -223,10 +233,12 @@ describe('MysqlJobStore claimBatch', () => {
   });
 });
 
+const held: JobClaim = { id: 'id-1', claimedBy: 'worker-A', claimedAt: '2026-01-01T00:00:00.000Z' };
+
 describe('MysqlJobStore transitions', () => {
   test('markCompleted transitions the row and releases the uniqueKey', async () => {
     const { db, captured } = jobsMock();
-    await store.markCompleted(db, 'id-1');
+    assert.equal(await store.markCompleted(db, held), true);
     assert.equal(captured.set?.status, 'completed');
     assert.equal(captured.set?.lastError, null);
     assert.equal(captured.set?.uniqueKey, null);
@@ -235,7 +247,7 @@ describe('MysqlJobStore transitions', () => {
 
   test('retry re-arms the row, carrying or clearing lastError, keeping the key', async () => {
     const withError = jobsMock();
-    await store.retry(withError.db, 'id-1', 5_000, 'boom');
+    assert.equal(await store.retry(withError.db, held, 5_000, 'boom'), true);
     assert.equal(withError.captured.set?.status, 'pending');
     assert.equal(withError.captured.set?.lastError, 'boom');
     assert.equal(withError.captured.set?.claimedAt, null);
@@ -244,17 +256,46 @@ describe('MysqlJobStore transitions', () => {
     assert.equal('uniqueKey' in (withError.captured.set ?? {}), false);
 
     const noError = jobsMock();
-    await store.retry(noError.db, 'id-1', 1_000);
+    await store.retry(noError.db, held, 1_000);
     assert.equal(noError.captured.set?.lastError, null);
   });
 
   test('markFailed records the reason and releases the uniqueKey', async () => {
     const { db, captured } = jobsMock();
-    await store.markFailed(db, 'id-1', 'dead');
+    assert.equal(await store.markFailed(db, held, 'dead'), true);
     assert.equal(captured.set?.status, 'failed');
     assert.equal(captured.set?.lastError, 'dead');
     assert.equal(captured.set?.uniqueKey, null);
     assert.ok(typeof captured.set?.processedAt === 'string');
+  });
+
+  test('each transition matches the job only while it is processing under the claim', async () => {
+    const dialect = new MySqlDialect();
+    const transitions = [
+      (db: unknown) => store.markCompleted(db, held),
+      (db: unknown) => store.retry(db, held, 0),
+      (db: unknown) => store.markFailed(db, held, 'dead'),
+    ];
+    for (const transition of transitions) {
+      const { db, captured } = jobsMock();
+      await transition(db);
+      const { sql, params } = dialect.sqlToQuery(captured.where!);
+      assert.equal(
+        sql,
+        '(`jobs`.`id` = ? and `jobs`.`status` = ? and `jobs`.`claimed_by` = ? and `jobs`.`claimed_at` = ?)',
+      );
+      assert.deepEqual(params, ['id-1', 'processing', 'worker-A', '2026-01-01T00:00:00.000Z']);
+    }
+  });
+
+  test('a transition whose claim was taken over writes nothing and resolves false', async () => {
+    for (const transition of [
+      (db: unknown) => store.markCompleted(db, held),
+      (db: unknown) => store.retry(db, held, 0),
+      (db: unknown) => store.markFailed(db, held, 'dead'),
+    ]) {
+      assert.equal(await transition(jobsMock({ affectedRows: 0 }).db), false);
+    }
   });
 });
 

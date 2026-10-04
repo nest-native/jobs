@@ -103,17 +103,43 @@ export interface JobContext {
  *
  * `claimBatch` opens its own transaction, claims due `pending` jobs plus
  * `processing` jobs stuck past `stuckTimeoutMs`, ordered by `priority DESC,
- * available_at ASC`, and marks them `processing`.
+ * available_at ASC`, and marks them `processing`. It must be atomic across
+ * workers: two concurrent calls never return the same job (the shipped
+ * Postgres and MySQL stores use `FOR UPDATE SKIP LOCKED`). It stamps every job
+ * it returns with `claimedBy` and `claimedAt`, and returns each job as that
+ * UPDATE left it. The claimer refuses a job without a string stamp, but it
+ * cannot tell a stale stamp from the one the claim wrote: a reclaimed job read
+ * before the UPDATE carries the previous claim's stamp, and runs under a claim
+ * no transition matches, again after every stuck timeout.
+ *
+ * The three transitions take that stamp back as a {@link JobClaim} and apply
+ * only while the job still holds it, resolving `false` (and writing nothing)
+ * once the claim has been taken over. A database error rejects; it never reads
+ * as `false`.
  */
 export interface JobStore {
   enqueue(db: unknown, input: EnqueueJobInput<object>): JobRow | Promise<JobRow>;
   claimBatch(db: unknown, cfg: ResolvedRunnerConfig): Promise<JobRow[]>;
   /** Terminal: sets `completed` and clears `uniqueKey` (releases the key). */
-  markCompleted(db: unknown, id: string): Promise<void>;
+  markCompleted(db: unknown, claim: JobClaim): Promise<boolean>;
   /** Re-arms the job: `pending`, attempts+1, due in `delayMs`. Keeps `uniqueKey`. */
-  retry(db: unknown, id: string, delayMs: number, lastError?: string): Promise<void>;
+  retry(db: unknown, claim: JobClaim, delayMs: number, lastError?: string): Promise<boolean>;
   /** Terminal: sets `failed`, attempts+1, and clears `uniqueKey`. */
-  markFailed(db: unknown, id: string, reason: string): Promise<void>;
+  markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean>;
+}
+
+/**
+ * The claim a job transition must still hold: the job's `id` plus the stamp
+ * `claimBatch` wrote. A transition matches the job only while it is
+ * `processing` under exactly this `claimedBy` and `claimedAt`, so a worker
+ * whose claim was taken over after the stuck timeout (by another worker, or by
+ * a later claim under the same `workerInstanceId`) can never overwrite the new
+ * owner's outcome.
+ */
+export interface JobClaim {
+  readonly id: string;
+  readonly claimedBy: string;
+  readonly claimedAt: string;
 }
 
 /**

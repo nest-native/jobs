@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { after, before, describe, test } from 'node:test';
 import { eq } from 'drizzle-orm';
 import { DEFAULT_RUNNER_CONFIG } from '../../jobs-claimer.service';
-import type { ScheduleClaim } from '../../interfaces';
+import type { JobClaim, JobRow, ScheduleClaim } from '../../interfaces';
 import {
   jobs as pgJobs,
   jobSchedules as pgJobSchedules,
@@ -42,6 +42,13 @@ const PG_DDL = [
 ];
 
 const sortedIds = (rows: { id: string }[]): string[] => rows.map((r) => r.id).sort();
+
+/** The claim `claimBatch` stamped on `row`, as the claimer holds it. */
+const claimOf = (row: JobRow): JobClaim => ({
+  id: row.id,
+  claimedBy: row.claimedBy as string,
+  claimedAt: row.claimedAt as string,
+});
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** `promise`'s value, or 'blocked' when it has not settled within `ms`. */
@@ -124,7 +131,7 @@ describe('Postgres round-trip (real service)', { skip: !POSTGRES_URL }, () => {
     const claimed = await store.claimBatch(db, cfg);
     assert.deepEqual(claimed.map((r) => r.id), [high.id, low.id]);
     assert.deepEqual(claimed[1]?.payload, { pages: 3 });
-    await store.markCompleted(db, high.id);
+    assert.equal(await store.markCompleted(db, claimOf(claimed[0]!)), true);
     const [done] = await db.select().from(pgJobs).where(eq(pgJobs.id, high.id));
     assert.equal(done?.status, 'completed');
   });
@@ -171,6 +178,133 @@ describe('Postgres round-trip (real service)', { skip: !POSTGRES_URL }, () => {
     assert.deepEqual(results.map((r) => r.claimed).sort(), [false, true]);
     const { rows } = await pool.query("SELECT count(*)::int AS c FROM jobs WHERE name = 'report.build'");
     assert.equal((rows as { c: number }[])[0].c, 1);
+  });
+
+  test('a worker whose stuck claim was taken over cannot move the job', async () => {
+    const [row] = await seed(1);
+    const [mine] = await store.claimBatch(db, { ...cfg, workerInstanceId: 'worker-A' });
+    await pool.query('UPDATE jobs SET claimed_at = $1 WHERE id = $2', [
+      new Date(Date.now() - 10 * cfg.stuckTimeoutMs).toISOString(),
+      row!.id,
+    ]);
+    const [theirs] = await store.claimBatch(db, { ...cfg, workerInstanceId: 'worker-B' });
+    assert.equal(await store.markCompleted(db, claimOf(mine!)), false);
+    assert.equal(await store.retry(db, claimOf(mine!), 0, 'late'), false);
+    assert.equal(await store.markFailed(db, claimOf(mine!), 'late'), false);
+    const [owned] = await db.select().from(pgJobs).where(eq(pgJobs.id, row!.id));
+    assert.equal(owned?.status, 'processing');
+    assert.equal(owned?.claimedBy, 'worker-B');
+    assert.equal(owned?.attempts, 0);
+    assert.equal(await store.markCompleted(db, claimOf(theirs!)), true);
+  });
+
+  test('a stale transition racing a reclaim reports the claim lost under a SERIALIZABLE default', async () => {
+    // The stale UPDATE waits on the job the new owner is claiming. In its own
+    // READ COMMITTED transaction it then re-checks the fence against the
+    // committed row and matches nothing, whatever the server default.
+    const pg = await import('pg');
+    const strict = new pg.Pool({
+      connectionString: POSTGRES_URL,
+      options: '-c default_transaction_isolation=serializable',
+    }).on('error', () => undefined);
+    const strictDb = await buildPgDb(strict);
+    const reclaim = await pool.connect();
+    try {
+      const [row] = await seed(1);
+      const [mine] = await store.claimBatch(db, { ...cfg, workerInstanceId: 'worker-A' });
+      await reclaim.query('BEGIN');
+      await reclaim.query("UPDATE jobs SET claimed_by = 'worker-B', claimed_at = $1 WHERE id = $2", [
+        new Date().toISOString(),
+        row!.id,
+      ]);
+      const stale = store.markCompleted(strictDb, claimOf(mine!));
+      await lockWaiter('update "jobs"%');
+      await reclaim.query('COMMIT');
+      assert.equal(await stale, false);
+      const [owned] = await db.select().from(pgJobs).where(eq(pgJobs.id, row!.id));
+      assert.equal(owned?.status, 'processing');
+      assert.equal(owned?.claimedBy, 'worker-B');
+    } finally {
+      reclaim.release();
+      await strict.end();
+    }
+  });
+
+  test('workers under a SERIALIZABLE default never report a claim they still hold as lost', async () => {
+    // Nothing can be taken over here (the stuck timeout outlasts the test), so
+    // every transition must apply. Run as serializable statements, the fenced
+    // UPDATEs scan the status index and abort each other (40001) while each
+    // claim still holds its job; their own READ COMMITTED transaction prevents
+    // that. ANALYZE gives the planner the steady state, few jobs `processing`,
+    // in which it picks that index.
+    const pg = await import('pg');
+    const workers = Array.from({ length: 8 }, () =>
+      new pg.Pool({
+        connectionString: POSTGRES_URL,
+        options: '-c default_transaction_isolation=serializable',
+        max: 2,
+      }).on('error', () => undefined),
+    );
+    try {
+      await seed(256);
+      await pool.query('ANALYZE jobs');
+      await Promise.all(workers.map(warm));
+      const outcomes = await Promise.all(
+        workers.map(async (worker, index) => {
+          const workerDb = await buildPgDb(worker);
+          const workerCfg = {
+            ...cfg,
+            workerInstanceId: `worker-${index}`,
+            batchSize: 32,
+            stuckTimeoutMs: 600_000,
+          };
+          const applied: boolean[] = [];
+          for (;;) {
+            const claimed = await store.claimBatch(workerDb, workerCfg);
+            if (claimed.length === 0) return applied;
+            for (const row of claimed) applied.push(await store.markCompleted(workerDb, claimOf(row)));
+          }
+        }),
+      );
+      const all = outcomes.flat();
+      assert.equal(all.length, 256, 'every job claimed exactly once');
+      assert.equal(all.filter((applied) => !applied).length, 0, 'a held claim was reported lost');
+      const { rows } = await pool.query("SELECT count(*)::int AS c FROM jobs WHERE status = 'completed'");
+      assert.equal((rows as { c: number }[])[0].c, 256);
+    } finally {
+      await Promise.all(workers.map((worker) => worker.end()));
+    }
+  });
+
+  test('a concurrent write to a claimed job does not lose its outcome under a REPEATABLE READ default', async () => {
+    // An operator's UPDATE of the job commits while the transition waits on it.
+    // Run at the server's REPEATABLE READ, the transition would fail with 40001
+    // although its claim still holds the job; at READ COMMITTED it re-checks
+    // the fence against the committed row and applies.
+    const pg = await import('pg');
+    const repeatable = new pg.Pool({
+      connectionString: POSTGRES_URL,
+      options: '-c default_transaction_isolation=repeatable\\ read',
+    }).on('error', () => undefined);
+    const repeatableDb = await buildPgDb(repeatable);
+    const operator = await pool.connect();
+    try {
+      const [row] = await seed(1);
+      const [mine] = await store.claimBatch(db, cfg);
+      await operator.query('BEGIN');
+      await operator.query('UPDATE jobs SET max_attempts = max_attempts + 5 WHERE id = $1', [row!.id]);
+      const completing = store.markCompleted(repeatableDb, claimOf(mine!));
+      await lockWaiter('update "jobs"%');
+      await operator.query('COMMIT');
+      assert.equal(await completing, true);
+      const [after] = await db.select().from(pgJobs).where(eq(pgJobs.id, row!.id));
+      assert.equal(after?.status, 'completed');
+      assert.equal(after?.maxAttempts, mine!.maxAttempts + 5);
+    } finally {
+      await operator.query('ROLLBACK');
+      operator.release();
+      await repeatable.end();
+    }
   });
 
   // The backend running `pattern` once it is waiting on a lock.
@@ -223,6 +357,16 @@ describe('Postgres round-trip (real service)', { skip: !POSTGRES_URL }, () => {
       (holder) => holder.query('LOCK TABLE jobs IN EXCLUSIVE MODE'),
       (target) => store.claimBatch(target, cfg),
       'select "id" from "jobs"%',
+    );
+  });
+
+  test('a connection lost mid-transition rejects instead of crashing the process', async () => {
+    const [row] = await seed(1);
+    const [mine] = await store.claimBatch(db, cfg);
+    await survivesConnectionLoss(
+      (holder) => holder.query('SELECT id FROM jobs WHERE id = $1 FOR UPDATE', [row!.id]),
+      (target) => store.markCompleted(target, claimOf(mine!)),
+      'update "jobs"%',
     );
   });
 

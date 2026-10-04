@@ -10,6 +10,7 @@ const report = (claimed: number): TickReport => ({
   completed: claimed,
   retried: 0,
   failed: 0,
+  lost: 0,
 });
 
 /** Build a fake claimer from a tick implementation (the loop only calls tick). */
@@ -18,6 +19,22 @@ function fakeClaimer(tick: () => Promise<TickReport>): JobsClaimer {
 }
 
 describe('runWorkerLoop', () => {
+  test('rejects an invalid runner config at once, before any tick', async () => {
+    let ticks = 0;
+    const claimer = fakeClaimer(() => {
+      ticks += 1;
+      return Promise.resolve(report(0));
+    });
+    // The signal only matters if the loop wrongly starts: it then stops and
+    // resolves instead of rejecting.
+    const signal = AbortSignal.timeout(100);
+    await assert.rejects(
+      () => runWorkerLoop(claimer, { runner: { workerInstanceId: '' }, pollIntervalMs: 5, signal }),
+      /workerInstanceId must be a non-empty string/,
+    );
+    assert.equal(ticks, 0);
+  });
+
   test('drains a backlog, then idles, then stops on abort', async () => {
     const controller = new AbortController();
     const reports: TickReport[] = [];

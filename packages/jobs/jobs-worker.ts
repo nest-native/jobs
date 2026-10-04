@@ -1,5 +1,9 @@
 import type { RunnerConfig } from './interfaces';
-import type { JobsClaimer, TickReport } from './jobs-claimer.service';
+import {
+  type JobsClaimer,
+  resolveRunnerConfig,
+  type TickReport,
+} from './jobs-claimer.service';
 
 export interface WorkerLoopOptions {
   /** Delay between ticks when the last tick claimed nothing (default 2000ms). */
@@ -19,11 +23,16 @@ export interface WorkerLoopOptions {
  * batch it loops immediately to drain the backlog; when it claims nothing it
  * waits `pollIntervalMs`. A throwing tick is reported via `onError` and the loop
  * continues after the same wait.
+ *
+ * An invalid `options.runner` rejects at once, before the first tick: it is a
+ * wiring mistake, and every tick would otherwise throw into an optional
+ * `onError`. Keep the returned promise and handle that rejection.
  */
 export async function runWorkerLoop(
   claimer: JobsClaimer,
   options: WorkerLoopOptions = {},
 ): Promise<void> {
+  resolveRunnerConfig(options.runner);
   const pollIntervalMs = options.pollIntervalMs ?? 2_000;
   const { signal } = options;
   while (!signal?.aborted) {

@@ -182,14 +182,20 @@ assert.deepEqual(
     /mutually exclusive/,
   );
 
+  assert.equal(
+    core.resolveRunnerConfig({ workerInstanceId: undefined }).workerInstanceId,
+    core.DEFAULT_RUNNER_CONFIG.workerInstanceId,
+  );
+  assert.throws(() => core.resolveRunnerConfig({ batchSize: 0 }), /batchSize must be a positive integer/);
+
   const reports = [
-    { scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0 },
-    { scheduled: 1, claimed: 1, completed: 1, retried: 0, failed: 0 },
-    { scheduled: 0, claimed: 0, completed: 0, retried: 0, failed: 0 },
+    { scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0, lost: 0 },
+    { scheduled: 1, claimed: 2, completed: 1, retried: 0, failed: 0, lost: 1 },
+    { scheduled: 0, claimed: 0, completed: 0, retried: 0, failed: 0, lost: 0 },
   ];
   const fakeClaimer = { tick: async () => reports.shift() };
   const total = await testing.drainJobs(fakeClaimer);
-  assert.deepEqual(total, { scheduled: 1, claimed: 3, completed: 2, retried: 1, failed: 0 });
+  assert.deepEqual(total, { scheduled: 1, claimed: 4, completed: 2, retried: 1, failed: 0, lost: 1 });
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

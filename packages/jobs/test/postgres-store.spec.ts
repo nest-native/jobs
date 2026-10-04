@@ -5,6 +5,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { drizzle, type PgliteDatabase } from 'drizzle-orm/pglite';
 import { eq } from 'drizzle-orm';
 import { DEFAULT_RUNNER_CONFIG } from '../jobs-claimer.service';
+import type { JobClaim, JobRow } from '../interfaces';
 import { isPgUniqueViolation, jobs, PostgresJobStore } from '../dialects/postgres';
 
 // The store casts `db as NodePgDatabase` at runtime; pglite's PgliteDatabase
@@ -28,6 +29,13 @@ const fetchRow = async (id: string) => {
   const rows = await db.select().from(jobs).where(eq(jobs.id, id));
   return rows[0];
 };
+
+/** Claims the due jobs and returns `row`'s claim, as the claimer would hold it. */
+async function claim(row: JobRow, workerInstanceId = cfg.workerInstanceId): Promise<JobClaim> {
+  const mine = (await store.claimBatch(db, { ...cfg, workerInstanceId })).find((r) => r.id === row.id);
+  assert.ok(mine, `job ${row.id} was not claimed`);
+  return { id: mine.id, claimedBy: mine.claimedBy!, claimedAt: mine.claimedAt! };
+}
 
 before(() => {
   // Surface a clear message if the optional native dep failed to load.
@@ -104,17 +112,17 @@ describe('PostgresJobStore uniqueKey contract (real 23505)', () => {
 
   test('terminal transitions release the key; retry keeps it', async () => {
     const first = await store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
-    await store.retry(db, first.id, 5_000, 'flaky');
+    assert.equal(await store.retry(db, await claim(first), 0, 'flaky'), true);
     assert.equal((await fetchRow(first.id))?.uniqueKey, 'k');
     // Dedup still applies while the retry is pending.
     assert.equal((await store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' })).id, first.id);
 
-    await store.markCompleted(db, first.id);
+    assert.equal(await store.markCompleted(db, await claim(first)), true);
     assert.equal((await fetchRow(first.id))?.uniqueKey, null);
     const second = await store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
     assert.notEqual(second.id, first.id);
 
-    await store.markFailed(db, second.id, 'dead');
+    assert.equal(await store.markFailed(db, await claim(second), 'dead'), true);
     assert.equal((await fetchRow(second.id))?.uniqueKey, null);
     const third = await store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
     assert.notEqual(third.id, second.id);
@@ -210,29 +218,49 @@ describe('PostgresJobStore claimBatch', () => {
 
 describe('PostgresJobStore transitions', () => {
   test('markCompleted / retry / markFailed transition the row', async () => {
-    const row = await store.enqueue(db, { name: 't', payload: {} });
-    await store.markCompleted(db, row.id);
-    let after = await fetchRow(row.id);
+    const done = await store.enqueue(db, { name: 'done', payload: {} });
+    assert.equal(await store.markCompleted(db, await claim(done)), true);
+    let after = await fetchRow(done.id);
     assert.equal(after?.status, 'completed');
     assert.ok(after?.processedAt);
 
-    await store.retry(db, row.id, 5_000, 'boom');
+    const row = await store.enqueue(db, { name: 't', payload: {} });
+    assert.equal(await store.retry(db, await claim(row), 0, 'boom'), true);
     after = await fetchRow(row.id);
     assert.equal(after?.status, 'pending');
     assert.equal(after?.attempts, 1);
     assert.equal(after?.lastError, 'boom');
     assert.equal(after?.claimedAt, null);
 
-    await store.retry(db, row.id, 1_000);
+    assert.equal(await store.retry(db, await claim(row), 0), true);
     after = await fetchRow(row.id);
     assert.equal(after?.attempts, 2);
     assert.equal(after?.lastError, null);
 
-    await store.markFailed(db, row.id, 'dead');
+    assert.equal(await store.markFailed(db, await claim(row), 'dead'), true);
     after = await fetchRow(row.id);
     assert.equal(after?.status, 'failed');
     assert.equal(after?.attempts, 3);
     assert.equal(after?.lastError, 'dead');
+  });
+
+  test('a worker whose stuck claim was taken over cannot move the job', async () => {
+    const row = await store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
+    const mine = await claim(row, 'worker-A');
+    await db
+      .update(jobs)
+      .set({ claimedAt: new Date(Date.now() - 10 * cfg.stuckTimeoutMs).toISOString() })
+      .where(eq(jobs.id, row.id));
+    const theirs = await claim(row, 'worker-B');
+    assert.equal(await store.markCompleted(db, mine), false);
+    assert.equal(await store.retry(db, mine, 0, 'late'), false);
+    assert.equal(await store.markFailed(db, mine, 'late'), false);
+    const owned = await fetchRow(row.id);
+    assert.equal(owned?.status, 'processing');
+    assert.equal(owned?.claimedBy, 'worker-B');
+    assert.equal(owned?.attempts, 0);
+    assert.equal(owned?.uniqueKey, 'k');
+    assert.equal(await store.markCompleted(db, theirs), true);
   });
 });
 

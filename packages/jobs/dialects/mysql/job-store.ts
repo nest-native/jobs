@@ -4,6 +4,7 @@ import type { MySql2Database } from 'drizzle-orm/mysql2';
 import { resolveAvailableAt } from '../../enqueue-input';
 import type {
   EnqueueJobInput,
+  JobClaim,
   JobRow,
   JobStore,
   ResolvedRunnerConfig,
@@ -11,6 +12,19 @@ import type {
 import { jobs } from './schema';
 
 type Db = MySql2Database<Record<string, never>>;
+
+/**
+ * Matches the job only while it is `processing` under exactly this claim, so a
+ * transition from a worker whose claim was taken over after the stuck timeout
+ * writes nothing, even when a later claim reused the same `workerInstanceId`.
+ */
+const heldBy = (claim: JobClaim) =>
+  and(
+    eq(jobs.id, claim.id),
+    eq(jobs.status, 'processing'),
+    eq(jobs.claimedBy, claim.claimedBy),
+    eq(jobs.claimedAt, claim.claimedAt),
+  );
 
 /**
  * MySQL surfaces a unique-constraint violation as error code `ER_DUP_ENTRY`
@@ -131,8 +145,8 @@ export class MysqlJobStore implements JobStore {
     }, { isolationLevel: 'read committed' });
   }
 
-  async markCompleted(db: unknown, id: string): Promise<void> {
-    await (db as Db)
+  async markCompleted(db: unknown, claim: JobClaim): Promise<boolean> {
+    const [result] = await (db as Db)
       .update(jobs)
       .set({
         status: 'completed',
@@ -141,17 +155,18 @@ export class MysqlJobStore implements JobStore {
         // Terminal → release the active-dedup key.
         uniqueKey: null,
       })
-      .where(eq(jobs.id, id));
+      .where(heldBy(claim));
+    return result.affectedRows > 0;
   }
 
   async retry(
     db: unknown,
-    id: string,
+    claim: JobClaim,
     delayMs: number,
     lastError?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const nextAvailable = new Date(Date.now() + delayMs).toISOString();
-    await (db as Db)
+    const [result] = await (db as Db)
       .update(jobs)
       .set({
         status: 'pending',
@@ -162,11 +177,12 @@ export class MysqlJobStore implements JobStore {
         lastError: lastError ?? null,
         // Still active → the uniqueKey stays claimed.
       })
-      .where(eq(jobs.id, id));
+      .where(heldBy(claim));
+    return result.affectedRows > 0;
   }
 
-  async markFailed(db: unknown, id: string, reason: string): Promise<void> {
-    await (db as Db)
+  async markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean> {
+    const [result] = await (db as Db)
       .update(jobs)
       .set({
         status: 'failed',
@@ -176,6 +192,7 @@ export class MysqlJobStore implements JobStore {
         // Terminal → release the active-dedup key.
         uniqueKey: null,
       })
-      .where(eq(jobs.id, id));
+      .where(heldBy(claim));
+    return result.affectedRows > 0;
   }
 }

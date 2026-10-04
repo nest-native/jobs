@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { eq } from 'drizzle-orm';
 import { DEFAULT_RUNNER_CONFIG } from '../jobs-claimer.service';
+import type { JobClaim, JobRow } from '../interfaces';
 import { isSqliteUniqueViolation, jobs, SqliteJobStore } from '../dialects/sqlite';
 
 const DDL = `
@@ -26,6 +27,23 @@ beforeEach(() => {
   sqlite.exec(DDL);
   db = drizzle(sqlite);
 });
+
+/** Claims the due jobs and returns `row`'s claim, as the claimer would hold it. */
+async function claim(row: JobRow, workerInstanceId = cfg.workerInstanceId): Promise<JobClaim> {
+  const mine = (await store.claimBatch(db, { ...cfg, workerInstanceId })).find((r) => r.id === row.id);
+  assert.ok(mine, `job ${row.id} was not claimed`);
+  return { id: mine.id, claimedBy: mine.claimedBy!, claimedAt: mine.claimedAt! };
+}
+
+/**
+ * Turns `held` into a claim made long ago, past the stuck timeout, so the next
+ * claim takes the job over; returns that stale claim.
+ */
+function stall(held: JobClaim): JobClaim {
+  const claimedAt = new Date(Date.now() - 10 * cfg.stuckTimeoutMs).toISOString();
+  db.update(jobs).set({ claimedAt }).where(eq(jobs.id, held.id)).run();
+  return { ...held, claimedAt };
+}
 
 describe('SqliteJobStore enqueue', () => {
   test('inserts a pending row and returns it synchronously', () => {
@@ -112,7 +130,7 @@ describe('SqliteJobStore uniqueKey contract', () => {
 
   test('markCompleted releases the key: a fresh job can be enqueued', async () => {
     const first = store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
-    await store.markCompleted(db, first.id);
+    assert.equal(await store.markCompleted(db, await claim(first)), true);
     const completed = db.select().from(jobs).where(eq(jobs.id, first.id)).get();
     assert.equal(completed?.uniqueKey, null);
 
@@ -123,7 +141,7 @@ describe('SqliteJobStore uniqueKey contract', () => {
 
   test('markFailed releases the key too', async () => {
     const first = store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
-    await store.markFailed(db, first.id, 'dead');
+    assert.equal(await store.markFailed(db, await claim(first), 'dead'), true);
     const failed = db.select().from(jobs).where(eq(jobs.id, first.id)).get();
     assert.equal(failed?.uniqueKey, null);
 
@@ -133,7 +151,7 @@ describe('SqliteJobStore uniqueKey contract', () => {
 
   test('retry keeps the key claimed (the job is still active)', async () => {
     const row = store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
-    await store.retry(db, row.id, 5_000, 'flaky');
+    assert.equal(await store.retry(db, await claim(row), 5_000, 'flaky'), true);
     const retried = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
     assert.equal(retried?.uniqueKey, 'k');
     // Dedup still applies while the retry is pending.
@@ -266,13 +284,14 @@ describe('SqliteJobStore claimBatch', () => {
 
 describe('SqliteJobStore transitions', () => {
   test('markCompleted, retry, markFailed transition the row', async () => {
-    const row = store.enqueue(db, { name: 't', payload: {} });
-    await store.markCompleted(db, row.id);
-    let after = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
+    const done = store.enqueue(db, { name: 'done', payload: {} });
+    assert.equal(await store.markCompleted(db, await claim(done)), true);
+    let after = db.select().from(jobs).where(eq(jobs.id, done.id)).get();
     assert.equal(after?.status, 'completed');
     assert.ok(after?.processedAt);
 
-    await store.retry(db, row.id, 5_000, 'boom');
+    const row = store.enqueue(db, { name: 't', payload: {} });
+    assert.equal(await store.retry(db, await claim(row), 0, 'boom'), true);
     after = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
     assert.equal(after?.status, 'pending');
     assert.equal(after?.attempts, 1);
@@ -280,12 +299,12 @@ describe('SqliteJobStore transitions', () => {
     assert.equal(after?.claimedAt, null);
     assert.equal(after?.claimedBy, null);
 
-    await store.retry(db, row.id, 1_000);
+    assert.equal(await store.retry(db, await claim(row), 0), true);
     after = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
     assert.equal(after?.attempts, 2);
     assert.equal(after?.lastError, null);
 
-    await store.markFailed(db, row.id, 'dead');
+    assert.equal(await store.markFailed(db, await claim(row), 'dead'), true);
     after = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
     assert.equal(after?.status, 'failed');
     assert.equal(after?.lastError, 'dead');
@@ -294,12 +313,49 @@ describe('SqliteJobStore transitions', () => {
 
   test('retry re-arms availableAt into the future', async () => {
     const row = store.enqueue(db, { name: 't', payload: {} });
+    const held = await claim(row);
     const before = Date.now();
-    await store.retry(db, row.id, 30_000);
+    await store.retry(db, held, 30_000);
     const after = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
     assert.ok(new Date(after!.availableAt).getTime() >= before + 30_000);
     // Not due → not claimable.
     assert.deepEqual(await store.claimBatch(db, cfg), []);
+  });
+});
+
+describe('SqliteJobStore fenced transitions', () => {
+  test('a worker whose stuck claim was taken over cannot move the job', async () => {
+    const row = store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
+    const mine = stall(await claim(row, 'worker-A'));
+    const theirs = await claim(row, 'worker-B');
+    assert.equal(await store.markCompleted(db, mine), false);
+    assert.equal(await store.retry(db, mine, 0, 'late'), false);
+    assert.equal(await store.markFailed(db, mine, 'late'), false);
+    const owned = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
+    assert.equal(owned?.status, 'processing');
+    assert.equal(owned?.claimedBy, 'worker-B');
+    assert.equal(owned?.attempts, 0);
+    assert.equal(owned?.uniqueKey, 'k');
+    assert.equal(await store.markCompleted(db, theirs), true);
+  });
+
+  test('a later claim under the same workerInstanceId fences out the earlier one', async () => {
+    const row = store.enqueue(db, { name: 't', payload: {} });
+    const first = stall(await claim(row));
+    const second = await claim(row);
+    assert.equal(second.claimedBy, first.claimedBy);
+    assert.notEqual(second.claimedAt, first.claimedAt);
+    assert.equal(await store.markCompleted(db, first), false);
+    assert.equal(await store.markCompleted(db, second), true);
+  });
+
+  test('a job that is no longer processing matches no claim', async () => {
+    const row = store.enqueue(db, { name: 't', payload: {} });
+    const held = await claim(row);
+    assert.equal(await store.markCompleted(db, held), true);
+    assert.equal(await store.markCompleted(db, held), false);
+    assert.equal(await store.retry(db, held, 0), false);
+    assert.equal(db.select().from(jobs).where(eq(jobs.id, row.id)).get()?.status, 'completed');
   });
 });
 

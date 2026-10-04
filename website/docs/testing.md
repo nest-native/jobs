@@ -73,7 +73,7 @@ handler.failNextWith(new RetryableError('flaky', 0));
 await userService.register('u-1', 'ada@example.com');
 const report = await drainJobs(app.get(JobsClaimer));
 
-expect(report).toEqual({ claimed: 2, completed: 1, retried: 1, failed: 0 });
+expect(report).toEqual({ scheduled: 0, claimed: 2, completed: 1, retried: 1, failed: 0, lost: 0 });
 expect(handler.executions()).toHaveLength(2);
 expect(handler.executions()[1].ctx.attempt).toBe(2);
 ```

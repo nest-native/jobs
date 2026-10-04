@@ -34,7 +34,7 @@ export async function drainJobs(
   options: DrainJobsOptions = {},
 ): Promise<TickReport> {
   const maxTicks = options.maxTicks ?? 100;
-  const total: TickReport = { scheduled: 0, claimed: 0, completed: 0, retried: 0, failed: 0 };
+  const total: TickReport = { scheduled: 0, claimed: 0, completed: 0, retried: 0, failed: 0, lost: 0 };
   for (let tick = 0; tick < maxTicks; tick += 1) {
     const report = await claimer.tick(options.runner);
     total.scheduled += report.scheduled;
@@ -42,6 +42,7 @@ export async function drainJobs(
     total.completed += report.completed;
     total.retried += report.retried;
     total.failed += report.failed;
+    total.lost += report.lost;
     if (report.claimed === 0) {
       return total;
     }
