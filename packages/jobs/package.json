@@ -78,7 +78,7 @@
     "croner": "^10.0.1"
   },
   "peerDependencies": {
-    "@nestjs-cls/transactional": "^3.0.0",
+    "@nestjs-cls/transactional": "^3.0.0 || ^4.0.0",
     "@nestjs/common": "^11.0.0 || ^12.0.0",
     "@nestjs/core": "^11.0.0 || ^12.0.0",
     "better-sqlite3": "^11.0.0 || ^12.0.0 || ^13.0.0",

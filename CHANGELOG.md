@@ -8,6 +8,13 @@ package release is useful for users.
 
 ## Unreleased
 
+- **`@nestjs-cls/transactional` 4 is supported.** The peer range is now
+  `^3.0.0 || ^4.0.0`; transactional 4 needs `nestjs-cls` 7 and, for Drizzle,
+  `@nestjs-cls/transactional-adapter-drizzle-orm` 2. Their only breaking change
+  is an `exports` map that exposes just each package root, and this package
+  imports nothing deeper. A CI leg runs the suite, the build and the sample on
+  that set; the devDependencies stay on transactional 3.
+
 - **Both ends of the NestJS peer range are now CI legs.** The single
   `nestjs-latest-major` job that installed `^12` is replaced by a
   `nestjs-compat` matrix: an `11 floor` leg pinned exactly to `11.0.0` (the

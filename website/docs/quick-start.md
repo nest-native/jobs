@@ -29,7 +29,7 @@ and your driver are peer dependencies you already control.
 | --- | --- | --- |
 | Node.js | `>=22` (`>=22.12` with NestJS 12 — see the note below the table) | `engines` is `>=22`; the 12 end of the NestJS range raises the floor, the 11 end does not |
 | `@nestjs/common`, `@nestjs/core` | `^11.0.0 \|\| ^12.0.0` | 12 is ESM-only; both majors run the full suite and the samples in CI |
-| `@nestjs-cls/transactional` | `^3.0.0` | on NestJS 12 you need `>=3.3.0` (with `nestjs-cls >=6.3.0`) — earlier minors declare `@nestjs/core >= 10 < 12` |
+| `@nestjs-cls/transactional` | `^3.0.0 \|\| ^4.0.0` | 4.x needs `nestjs-cls` `^7` (and the Drizzle adapter `^2`); on NestJS 12 with 3.x you need `>=3.3.0` (with `nestjs-cls >=6.3.0`) — earlier minors declare `@nestjs/core >= 10 < 12` |
 | `drizzle-orm` | `^0.44.0 \|\| ^0.45.0` | |
 | `better-sqlite3` | `^11.0.0 \|\| ^12.0.0 \|\| ^13.0.0` | optional; 13 requires Node `>=22` |
 | `pg` | `^8.0.0` | optional |
