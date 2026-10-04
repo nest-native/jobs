@@ -230,6 +230,7 @@ interface JobStore {
   markCompleted(db: unknown, claim: JobClaim): Promise<boolean>;             // terminal, clears uniqueKey
   retry(db: unknown, claim: JobClaim, delayMs: number, lastError?: string): Promise<boolean>; // keeps uniqueKey
   markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean>; // terminal, clears uniqueKey
+  release?(db: unknown, claim: JobClaim): Promise<boolean>;  // optional (0.5.1+), see below
 }
 
 interface JobClaim {
@@ -252,6 +253,24 @@ A custom store owes the engine three things:
   that `claimedBy` and `claimedAt`, and resolve `false`, writing nothing, once
   the claim has been taken over.
 - A database error rejects; it never reads as `false`.
+
+Two more things are worth getting right:
+
+- **`release` is optional.** It hands a held job back `pending` and unclaimed,
+  with its attempts, due time and `uniqueKey` unchanged, under the same fence.
+  When recording an outcome fails (the database went away mid-batch), the
+  claimer calls it for the batch's jobs that have not run yet, best effort, so
+  the next claim takes them at once; without it they wait for
+  `stuckTimeoutMs`. The job whose outcome failed to record is never handed
+  back: it ran, and handing it back would run it again at once.
+- **Stamp the claim with the time it ran.** Take `claimedAt` once the claim has
+  its connection, not before a pooled checkout: a stamp taken before a slow
+  checkout makes the claim look older than it is, and other workers reclaim its
+  jobs that much sooner.
+
+On MySQL, a connection the database drops mid-claim or mid-transition rejects
+the call: mysql2's pooled connections listen for their own errors, so unlike
+node-postgres nothing extra is needed, and the pool replaces the connection.
 Ship stores:
 
 | Store | Import | Execution |

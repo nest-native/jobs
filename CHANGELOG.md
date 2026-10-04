@@ -8,6 +8,27 @@ package release is useful for users.
 
 ## Unreleased
 
+- **A failed transition no longer strands the rest of the batch.** When
+  recording an outcome fails (the database went away mid-batch), the tick
+  throws, and the batch's jobs that had not run yet used to wait out
+  `stuckTimeoutMs` before any worker could take them. The claimer now hands
+  them back first, best effort, through the new optional `JobStore.release`:
+  `pending` and unclaimed, attempts, due time and `uniqueKey` unchanged, fenced
+  on the claim like every transition. After a transient error the next claim
+  takes them at once; if the database is still down the hand-back fails too
+  and they wait as before. The job whose outcome failed to record stays
+  claimed, since it ran. The shipped stores implement `release`; a custom store
+  without it behaves as before.
+- **A claim is stamped once its connection is checked out.** The Postgres and
+  MySQL claims took `claimedAt` before waiting for a pooled connection, so a
+  slow checkout made the claim look older than it was, and other workers
+  treated its jobs as stuck that much sooner. The stamp is now taken inside
+  the claim's transaction.
+- **A dropped MySQL connection is now pinned by real-database specs.** Killing
+  the connection mid-claim or mid-transition rejects the call without crashing
+  the process, and the pool replaces the connection: mysql2's pooled
+  connections listen for their own errors, unlike node-postgres clients.
+
 ## 0.5.0
 
 - **A worker whose claim was taken over can no longer record the job's

@@ -170,6 +170,15 @@ export class SqliteJobStore implements JobStore {
     return Promise.resolve(changes > 0);
   }
 
+  release(db: unknown, claim: JobClaim): Promise<boolean> {
+    const { changes } = (db as Db)
+      .update(jobs)
+      .set({ status: 'pending', claimedAt: null, claimedBy: null })
+      .where(heldBy(claim))
+      .run();
+    return Promise.resolve(changes > 0);
+  }
+
   markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean> {
     const { changes } = (db as Db)
       .update(jobs)

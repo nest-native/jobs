@@ -324,10 +324,25 @@ describe('SqliteJobStore transitions', () => {
 });
 
 describe('SqliteJobStore fenced transitions', () => {
+  test('release hands a held job back pending and unclaimed, attempts untouched', async () => {
+    const row = store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
+    const held = await claim(row);
+    assert.equal(await store.release(db, held), true);
+    const after = db.select().from(jobs).where(eq(jobs.id, row.id)).get();
+    assert.equal(after?.status, 'pending');
+    assert.equal(after?.claimedBy, null);
+    assert.equal(after?.claimedAt, null);
+    assert.equal(after?.attempts, 0);
+    assert.equal(after?.availableAt, row.availableAt);
+    assert.equal(after?.uniqueKey, 'k');
+    assert.equal(await store.release(db, held), false);
+  });
+
   test('a worker whose stuck claim was taken over cannot move the job', async () => {
     const row = store.enqueue(db, { name: 't', payload: {}, uniqueKey: 'k' });
     const mine = stall(await claim(row, 'worker-A'));
     const theirs = await claim(row, 'worker-B');
+    assert.equal(await store.release(db, mine), false);
     assert.equal(await store.markCompleted(db, mine), false);
     assert.equal(await store.retry(db, mine, 0, 'late'), false);
     assert.equal(await store.markFailed(db, mine, 'late'), false);

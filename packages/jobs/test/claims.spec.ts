@@ -220,6 +220,93 @@ describe('JobsClaimer (claims)', () => {
     assert.equal(runs.length, 1);
   });
 
+  // A store whose first markCompleted fails, as a dropped connection would,
+  // and whose `release` is the real one unless `release` says otherwise.
+  const failingFirstCompletion = (release?: JobStore['release'] | null): JobStore => {
+    let completions = 0;
+    return {
+      enqueue: (handle, input) => real.enqueue(handle, input),
+      claimBatch: (handle, cfg) => real.claimBatch(handle, cfg),
+      markCompleted: (handle, claim) =>
+        (completions += 1) === 1
+          ? Promise.reject(new Error('database went away'))
+          : real.markCompleted(handle, claim),
+      retry: (handle, claim, delayMs, lastError) => real.retry(handle, claim, delayMs, lastError),
+      markFailed: (handle, claim, reason) => real.markFailed(handle, claim, reason),
+      ...(release === null ? {} : { release: release ?? ((handle, claim) => real.release(handle, claim)) }),
+    };
+  };
+
+  test('a failed transition hands the jobs that have not run back for the next claim', async () => {
+    const rows = [enqueue('first'), enqueue('second'), enqueue('third')];
+    const logs = captureLogs();
+    try {
+      await assert.rejects(claimer(undefined, failingFirstCompletion()).tick(), /database went away/);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(runs.length, 1);
+    const [ran] = runs;
+    // The job that ran stays claimed: handing it back would run it again at once.
+    assert.equal(fetchRow(ran!.id)?.status, 'processing');
+    for (const row of rows.filter((r) => r.id !== ran!.id)) {
+      const after = fetchRow(row.id);
+      assert.equal(after?.status, 'pending');
+      assert.equal(after?.claimedBy, null);
+      assert.equal(after?.attempts, 0);
+    }
+    assert.deepEqual(logs.warns, [
+      'handed back 2 job(s) that had not run after a failed transition, for the next claim to take',
+    ]);
+    // The next claim takes them straight away, without waiting for the stuck timeout.
+    assert.equal((await claimer().tick()).completed, 2);
+  });
+
+  test('without a store release, the rest of the batch waits for the stuck timeout', async () => {
+    const rows = [enqueue('first'), enqueue('second')];
+    await assert.rejects(claimer(undefined, failingFirstCompletion(null)).tick(), /database went away/);
+    assert.deepEqual(
+      rows.map((row) => fetchRow(row.id)?.status),
+      ['processing', 'processing'],
+    );
+  });
+
+  test('a release that fails too keeps the original error', async () => {
+    enqueue('first');
+    enqueue('second');
+    const logs = captureLogs();
+    try {
+      await assert.rejects(
+        claimer(undefined, failingFirstCompletion(() => Promise.reject(new Error('still down')))).tick(),
+        /database went away/,
+      );
+    } finally {
+      logs.restore();
+    }
+    assert.deepEqual(logs.warns, [
+      'could not hand back 1 job(s) that had not run after a failed transition (still down); they are reclaimed after stuckTimeoutMs',
+    ]);
+  });
+
+  test('a job without a claim stamp is not handed back', async () => {
+    const row = enqueue();
+    const unstamped = { ...row, status: 'processing', claimedBy: null, claimedAt: null } as unknown as JobRow;
+    let released = 0;
+    const store: JobStore = {
+      enqueue: (handle, input) => real.enqueue(handle, input),
+      claimBatch: async (handle, cfg) => [...(await real.claimBatch(handle, cfg)), unstamped],
+      markCompleted: () => Promise.reject(new Error('database went away')),
+      retry: (handle, claim, delayMs, lastError) => real.retry(handle, claim, delayMs, lastError),
+      markFailed: (handle, claim, reason) => real.markFailed(handle, claim, reason),
+      release: () => {
+        released += 1;
+        return Promise.resolve(true);
+      },
+    };
+    await assert.rejects(claimer(undefined, store).tick(), /database went away/);
+    assert.equal(released, 0);
+  });
+
   test('a job claimBatch returns without its claim stamp is neither run nor transitioned', async () => {
     const row = enqueue();
     const fresh = new Date().toISOString();

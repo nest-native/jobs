@@ -56,7 +56,7 @@ beforeEach(async () => {
  * whose one client runs every statement on the in-process PGlite and records
  * the statements and how it was released. `failOn` makes a statement fail.
  */
-function pglitePool() {
+function pglitePool(connectDelayMs = 0) {
   const statements: string[] = [];
   const releases: (Error | undefined)[] = [];
   let failing: (text: string) => Error | undefined = () => undefined;
@@ -74,7 +74,10 @@ function pglitePool() {
       releases.push(error);
     },
   });
-  const pool = { totalCount: 1, connect: () => Promise.resolve(client) };
+  const pool = {
+    totalCount: 1,
+    connect: () => new Promise((resolve) => setTimeout(() => resolve(client), connectDelayMs)),
+  };
   return {
     db: drizzleNodePg(pool as never),
     pool,
@@ -160,6 +163,16 @@ describe('Postgres claims', () => {
     ]);
     assert.deepEqual(pg.releases, [undefined, undefined]);
     assert.equal(pg.client.listenerCount('error'), 0);
+  });
+
+  test('on a node-postgres pool, a claim is stamped once the connection is checked out', async () => {
+    // A stamp taken before a slow checkout makes the claim look older than it
+    // is, so another worker would treat its jobs as stuck that much sooner.
+    const pg = pglitePool(80);
+    await enqueue();
+    const asked = Date.now();
+    const [claimed] = await jobStore.claimBatch(pg.db, cfg);
+    assert.ok(Date.parse(claimed!.claimedAt!) >= asked + 70, `${claimed!.claimedAt}`);
   });
 
   test('on a node-postgres pool, a failed statement rolls back and the client goes back for reuse', async () => {

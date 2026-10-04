@@ -126,6 +126,15 @@ export interface JobStore {
   retry(db: unknown, claim: JobClaim, delayMs: number, lastError?: string): Promise<boolean>;
   /** Terminal: sets `failed`, attempts+1, and clears `uniqueKey`. */
   markFailed(db: unknown, claim: JobClaim, reason: string): Promise<boolean>;
+  /**
+   * Optional. Hands a claimed job back untouched while the claim still holds
+   * it: `pending` and unclaimed, with its attempts and due time unchanged.
+   * Resolves `false` once the claim has been taken over. The claimer calls it
+   * for the batch's jobs that have not run yet when recording an outcome
+   * failed, so they are available again at once instead of after
+   * `stuckTimeoutMs`; a store without it leaves them to the stuck timeout.
+   */
+  release?(db: unknown, claim: JobClaim): Promise<boolean>;
 }
 
 /**
