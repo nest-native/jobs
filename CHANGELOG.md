@@ -8,6 +8,8 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.5.2
+
 - **The SQLite job claim no longer fails with "database is locked" when another
   process writes to the same file**, as an API process and a worker process
   sharing one database do. It ran in a deferred transaction: it read first and
