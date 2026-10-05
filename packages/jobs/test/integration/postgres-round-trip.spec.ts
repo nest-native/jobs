@@ -308,6 +308,76 @@ describe('Postgres round-trip (real service)', { skip: !POSTGRES_URL }, () => {
     }
   });
 
+  // Asks the server, on the same connection and inside the same transaction,
+  // which isolation level each of the store's statements runs under.
+  function reportIsolation(client: { query: unknown }, seen: string[]): void {
+    const query = (client.query as (...args: unknown[]) => Promise<{ rows: Record<string, string>[] }>).bind(client);
+    let inTransaction = false;
+    client.query = async (config: unknown, ...rest: unknown[]) => {
+      const text = typeof config === 'string' ? config : (config as { text: string }).text;
+      if (/^begin\b/i.test(text)) inTransaction = true;
+      else if (/^(commit|rollback)\b/i.test(text)) inTransaction = false;
+      else if (inTransaction) {
+        const { rows } = await query('SHOW transaction_isolation');
+        seen.push(rows[0]!.transaction_isolation!);
+      }
+      return query(config, ...rest);
+    };
+  }
+
+  // The claims and a transition, each in its own transaction.
+  async function claimEverything(target: typeof db): Promise<void> {
+    await seed(1);
+    const [mine] = await store.claimBatch(target, cfg);
+    assert.equal(await store.markCompleted(target, claimOf(mine!)), true);
+    assert.equal((await scheduleStore.claimAndEnqueue(target, await dueSchedule())).claimed, true);
+  }
+
+  test('on a pool, the claims and transitions run at READ COMMITTED on a SERIALIZABLE server', async () => {
+    const pg = await import('pg');
+    const strict = new pg.Pool({
+      connectionString: POSTGRES_URL,
+      options: '-c default_transaction_isolation=serializable',
+    }).on('error', () => undefined);
+    const seen: string[] = [];
+    const reporting = new WeakSet<object>();
+    const connect = strict.connect.bind(strict) as () => Promise<import('pg').PoolClient>;
+    (strict as { connect: unknown }).connect = async () => {
+      const client = await connect();
+      if (!reporting.has(client)) {
+        reporting.add(client);
+        reportIsolation(client, seen);
+      }
+      return client;
+    };
+    try {
+      await claimEverything(await buildPgDb(strict));
+      assert.ok(seen.length >= 4, `only ${seen.length} statements observed`);
+      assert.deepEqual([...new Set(seen)], ['read committed']);
+    } finally {
+      await strict.end();
+    }
+  });
+
+  test('on a single Client, the claims and transitions run at READ COMMITTED on a SERIALIZABLE server', async () => {
+    const pg = await import('pg');
+    const client = new pg.Client({
+      connectionString: POSTGRES_URL,
+      options: '-c default_transaction_isolation=serializable',
+    });
+    client.on('error', () => undefined);
+    await client.connect();
+    const seen: string[] = [];
+    reportIsolation(client, seen);
+    try {
+      await claimEverything(await buildPgDb(client));
+      assert.ok(seen.length >= 4, `only ${seen.length} statements observed`);
+      assert.deepEqual([...new Set(seen)], ['read committed']);
+    } finally {
+      await client.end();
+    }
+  });
+
   // The backend running `pattern` once it is waiting on a lock.
   async function lockWaiter(pattern: string): Promise<number> {
     for (let attempt = 0; attempt < 100; attempt += 1) {

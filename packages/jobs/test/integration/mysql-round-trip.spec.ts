@@ -264,6 +264,41 @@ describe('MySQL round-trip (real service)', { skip: !MYSQL_URL }, () => {
     assert.equal(after?.attempts, 0);
   });
 
+  test('the claim runs at READ COMMITTED: an enqueue while it holds its jobs does not wait', async () => {
+    // Under InnoDB's default REPEATABLE READ the claim's locking read also locks
+    // the gaps it scanned, so every concurrent enqueue would wait for the claim
+    // to commit. Pause the claim between its read and its UPDATE, and enqueue
+    // from another connection meanwhile.
+    await seed(3);
+    const mysql = await import('mysql2/promise');
+    const watched = mysql.createPool({ uri: MYSQL_URL as string, connectionLimit: 1 });
+    let enqueue: Promise<unknown> | undefined;
+    let outcome: unknown;
+    const getConnection = watched.getConnection.bind(watched);
+    watched.getConnection = (async () => {
+      const connection = await getConnection();
+      const query = connection.query.bind(connection) as (...args: unknown[]) => Promise<unknown>;
+      (connection as { query: unknown }).query = async (options: unknown, ...rest: unknown[]) => {
+        const text = typeof options === 'string' ? options : (options as { sql: string }).sql;
+        if (enqueue === undefined && /^update `jobs` set `status` = \?, `claimed_at`/.test(text)) {
+          enqueue = store.enqueue(poolDb, { name: 'concurrent', payload: {} });
+          outcome = await settleWithin(enqueue, 2_000);
+        }
+        return query(options, ...rest);
+      };
+      return connection;
+    }) as typeof watched.getConnection;
+    try {
+      const claimed = await store.claimBatch(await buildMysqlDb(watched), cfg);
+      assert.equal(claimed.length, 3);
+      assert.notEqual(outcome, undefined, 'the claim never reached its UPDATE');
+      assert.notEqual(outcome, 'blocked', 'an enqueue waited on the claim: it ran above READ COMMITTED');
+    } finally {
+      await enqueue;
+      await watched.end();
+    }
+  });
+
   // The MySQL connection running `pattern`: blocked behind the holder, it is
   // the only one with that statement in flight. (A row-lock wait reports its
   // state as "updating", a table-lock wait as "Waiting for table ... lock".)

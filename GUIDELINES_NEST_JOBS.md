@@ -75,6 +75,18 @@ timers cannot give a multi-instance deployment.
   pool so two claims really overlap, or set the server default isolation per
   pool (`options: '-c default_transaction_isolation=serializable'`). PGlite is
   one connection and cannot show a race.
+- **An isolation pin is proven against the server**, never by recording the
+  config a store hands drizzle: the real-Postgres specs read
+  `SHOW transaction_isolation` on the store's own connection inside its
+  transaction (pool and single `Client`, server default SERIALIZABLE), and the
+  real-MySQL spec shows an enqueue does not wait on a paused claim, which
+  REPEATABLE READ's gap locks would make it do.
+- **The SQLite job claim opens with `BEGIN IMMEDIATE`.** A deferred transaction
+  reads first and asks for the write lock at its UPDATE, and SQLite fails that
+  upgrade at once ("database is locked") when another process holds the lock,
+  without consulting the busy timeout. The schedule claim writes first, so it
+  already waits like any writer. Every claim stamps `claimedAt` once it holds
+  its connection or lock.
 - Support line: Node `>=22` (`>=22.12` on the NestJS 12 end — see the Node
   floor bullet below), NestJS `11.x`/`12.x`, Drizzle `0.44`/`0.45`,
   `@nestjs-cls/transactional` `3.x`/`4.x` (4.x with `nestjs-cls` 7),

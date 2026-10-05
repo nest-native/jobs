@@ -8,6 +8,25 @@ package release is useful for users.
 
 ## Unreleased
 
+- **The SQLite job claim no longer fails with "database is locked" when another
+  process writes to the same file**, as an API process and a worker process
+  sharing one database do. It ran in a deferred transaction: it read first and
+  asked for the write lock at its UPDATE, and when another process held that
+  lock SQLite failed the upgrade at once, without consulting the busy timeout,
+  because waiting could deadlock. The claim now opens with `BEGIN IMMEDIATE`,
+  which takes the write lock up front and waits out better-sqlite3's `timeout`
+  like any writer, and it stamps `claimedAt` once the lock is held. A spec
+  holds the lock from a second process; on the previous claim it fails with
+  "database is locked".
+- **The READ COMMITTED pin is now proven against the server, not just passed
+  as config.** Real-Postgres specs ask the server, on the store's own
+  connection and inside its transaction, which isolation level the job claim,
+  a transition and the schedule claim run under, on a pool and on a single
+  `Client`, with the server default at SERIALIZABLE. A real-MySQL spec pauses
+  the claim between its locking read and its UPDATE and enqueues from another
+  connection, which REPEATABLE READ's gap locks would block. Removing each pin
+  fails its spec.
+
 ## 0.5.1
 
 - **A failed transition no longer strands the rest of the batch.** When
