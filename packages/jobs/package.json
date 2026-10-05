@@ -1,6 +1,6 @@
 {
   "name": "@nest-native/jobs",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Background jobs for NestJS without Redis \u2014 a Drizzle-backed job queue (SQLite, Postgres + MySQL) with transactional enqueue, retries, delayed and unique jobs",
   "keywords": [
     "nestjs",
