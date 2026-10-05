@@ -176,7 +176,11 @@ positive number, or a negative backoff. Numeric strings count as invalid.
 - **Claims are exclusive.** The Postgres and MySQL stores lock the jobs they
   claim with `FOR UPDATE SKIP LOCKED` at READ COMMITTED, so concurrent claims
   split the backlog instead of running the same job twice; SQLite runs one
-  write transaction at a time.
+  write transaction at a time, and its claim opens with `BEGIN IMMEDIATE`, so
+  with several processes on one database file it waits for another writer, up
+  to better-sqlite3's busy `timeout`, instead of failing with "database is
+  locked". Give the connection a `timeout` (`new Database(file, { timeout:
+  5_000 })`) when more than one process writes to it.
 - **A stalled claim is taken over.** A job still `processing` after
   `stuckTimeoutMs` is claimed again, so give every worker the same
   `stuckTimeoutMs`, longer than the slowest handler, and keep their clocks in

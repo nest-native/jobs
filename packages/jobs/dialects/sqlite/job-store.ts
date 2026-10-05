@@ -105,10 +105,17 @@ export class SqliteJobStore implements JobStore {
   }
 
   claimBatch(db: unknown, cfg: ResolvedRunnerConfig): Promise<JobRow[]> {
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const stuckCutoff = new Date(now.getTime() - cfg.stuckTimeoutMs).toISOString();
+    // BEGIN IMMEDIATE takes the write lock up front. A deferred transaction
+    // reads first and asks for it at the UPDATE, and when another process
+    // already holds it SQLite fails that upgrade with "database is locked"
+    // rather than wait, since waiting could deadlock; an immediate one waits
+    // out the busy timeout like any writer.
     const rows = (db as Db).transaction((tx) => {
+      // Stamped once the lock is ours, as on the other dialects: a BEGIN that
+      // waited must not leave this claim looking older than it is.
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const stuckCutoff = new Date(now.getTime() - cfg.stuckTimeoutMs).toISOString();
       const candidates = tx
         .select({ id: jobs.id })
         .from(jobs)
@@ -133,7 +140,7 @@ export class SqliteJobStore implements JobStore {
         .where(inArray(jobs.id, ids))
         .orderBy(desc(jobs.priority), asc(jobs.availableAt))
         .all();
-    });
+    }, { behavior: 'immediate' });
     return Promise.resolve(rows);
   }
 
