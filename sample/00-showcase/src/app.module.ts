@@ -13,7 +13,7 @@ import {
 import { UserService } from './user.service';
 
 // A global module exporting the Drizzle instance, so both the CLS adapter and
-// JobsModule resolve it (mirrors how @nest-native/drizzle registers).
+// JobsModule resolve it (mirrors how @nestjs/drizzle registers).
 @Module({})
 class DbModule {}
 
