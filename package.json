@@ -79,5 +79,5 @@
     "qs": "^6.16.0",
     "multer": "^2.4.0"
   },
-  "packageManager": "npm@11.13.0"
+  "packageManager": "npm@11.21.1"
 }
