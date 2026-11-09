@@ -8,6 +8,18 @@ package release is useful for users.
 
 ## Unreleased
 
+- **croner 11: schedules in a timezone with daylight saving time fire as
+  Vixie cron does.** The one runtime dependency moves from `^10.0.1` to
+  `^11.0.0`. At fall back, croner 10 skipped the repeated hour for interval
+  schedules: an hourly `0 * * * *` in `Europe/Berlin` fired at 02:00 CEST and
+  then at 03:00 CET, losing the run at 02:00 CET, and `*/30 * * * *` lost two
+  runs. croner 11 fires on both passes of that hour. A fixed time in the
+  spring-forward gap now fires at the first valid time after it, `30 2 * * *`
+  at 03:00 instead of 03:30, and a fixed time in the repeated hour still fires
+  once. Schedules in UTC, the default, are unchanged. Three specs pin these
+  cases; on croner 10 the first two fail. The cron schedules page documents
+  the behaviour.
+
 - **Dependency advisories, published package unchanged.** The dev tree takes
   `proxy-addr` 2.0.8 (GHSA-jqcg-44mw-7w3h, critical, through Express). In
   `website/`: `shell-quote` 1.12, `compression` 1.8.2, `source-map-js` 1.2.2 and

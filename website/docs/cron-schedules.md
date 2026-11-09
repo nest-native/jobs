@@ -101,3 +101,11 @@ evaluated (hand-edited row) is disabled, with the error recorded in its
 Timezones and DST are delegated to [croner](https://www.npmjs.com/package/croner)
 — the package's single runtime dependency. The default timezone is **UTC**,
 not server-local, so a schedule means the same thing on every instance.
+
+In a timezone with daylight saving time, croner follows Vixie cron. A
+fixed-time schedule whose time falls in the spring-forward gap fires at the
+first valid time after it: `30 2 * * *` in `Europe/Berlin` fires at 03:00 on
+the day the clocks jump from 02:00 to 03:00. At fall back, a fixed-time
+schedule in the repeated hour fires once, and an interval schedule such as
+`0 * * * *` or `*/30 * * * *` fires on both passes of that hour. UTC has no
+such days.

@@ -75,7 +75,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "croner": "^10.0.1"
+    "croner": "^11.0.0"
   },
   "peerDependencies": {
     "@nestjs-cls/transactional": "^3.0.0 || ^4.0.0",
