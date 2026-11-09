@@ -87,6 +87,47 @@ describe('schedule planner', () => {
     assert.equal(next, '2026-01-02T03:00:00.000Z');
   });
 
+  // DST follows croner 11, which follows Vixie cron. Europe/Berlin moves from
+  // 02:00 CET to 03:00 CEST on 2026-03-29 and back from 03:00 CEST to 02:00
+  // CET on 2026-10-25. croner 10 gave 03:30 local for the first case and
+  // skipped the repeated hour in the second, losing two runs of an hourly job.
+  const occurrences = (cron: string, from: string, count: number): string[] => {
+    const runs: string[] = [];
+    let after = new Date(from);
+    for (let i = 0; i < count; i += 1) {
+      const next = nextOccurrence(cron, 'Europe/Berlin', after);
+      assert.ok(next, `${cron} stopped after ${runs.join(', ')}`);
+      runs.push(next);
+      after = new Date(next);
+    }
+    return runs;
+  };
+
+  test('a fixed time in the spring-forward gap fires at the first valid time after it', () => {
+    // 02:30 does not exist on 2026-03-29: 03:00 CEST = 01:00Z, then 02:30 CEST.
+    assert.deepEqual(occurrences('30 2 * * *', '2026-03-28T23:00:00.000Z', 2), [
+      '2026-03-29T01:00:00.000Z',
+      '2026-03-30T00:30:00.000Z',
+    ]);
+  });
+
+  test('an interval schedule fires on both passes of the repeated hour at fall back', () => {
+    // 02:00 CEST = 00:00Z, 02:00 CET = 01:00Z, 03:00 CET = 02:00Z.
+    assert.deepEqual(occurrences('0 * * * *', '2026-10-24T23:30:00.000Z', 3), [
+      '2026-10-25T00:00:00.000Z',
+      '2026-10-25T01:00:00.000Z',
+      '2026-10-25T02:00:00.000Z',
+    ]);
+  });
+
+  test('a fixed time in the repeated hour at fall back fires once', () => {
+    // 02:30 CEST = 00:30Z; 02:30 CET (01:30Z) is skipped, then 02:30 CET next day.
+    assert.deepEqual(occurrences('30 2 * * *', '2026-10-24T23:00:00.000Z', 2), [
+      '2026-10-25T00:30:00.000Z',
+      '2026-10-26T01:30:00.000Z',
+    ]);
+  });
+
   test('nextOccurrence is null when the expression never fires again', () => {
     // February 30th never comes.
     assert.equal(nextOccurrence('0 0 30 2 *', null, new Date()), null);
