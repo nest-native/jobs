@@ -47,7 +47,7 @@ npm run showcase
 
 ## What a sample is for
 
-The samples pin the exact published version (`"@nest-native/jobs": "0.1.0"`)
-rather than a range — CI resolves them against the workspace before a release
-and against the registry after one (`release:check:published`), so every
+The samples pin `@nest-native/jobs` to the exact released version rather than a
+range — CI resolves them against the workspace before a release, and the release
+workflow against the registry after one (`release:check:published`), so every
 release is proven consumable by a real application before and after it ships.
