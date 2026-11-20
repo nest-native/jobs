@@ -8,6 +8,8 @@ package release is useful for users.
 
 ## Unreleased
 
+## 0.6.0
+
 - **croner 11: schedules in a timezone with daylight saving time fire as
   Vixie cron does.** The one runtime dependency moves from `^10.0.1` to
   `^11.0.0`. At fall back, croner 10 skipped the repeated hour for interval
