@@ -27,3 +27,18 @@ jobs:
         run: npm publish --workspace @nest-native/jobs --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # The registry can take a few minutes to serve a new version, and the
+      # published check installs it from there: wait for it first.
+      - name: Check the published release
+        run: |
+          VERSION="$(node -p "require('./packages/jobs/package.json').version")"
+          DEADLINE=$((SECONDS + 600))
+          until [ "$(npm view "@nest-native/jobs@${VERSION}" version 2>/dev/null)" = "${VERSION}" ]; do
+            if [ "${SECONDS}" -ge "${DEADLINE}" ]; then
+              echo "::error::@nest-native/jobs@${VERSION} was still not on the registry 10 minutes after publishing, so the published check did not run."
+              exit 1
+            fi
+            echo "Waiting for the registry to serve @nest-native/jobs@${VERSION}..."
+            sleep 15
+          done
+          npm run release:check:published

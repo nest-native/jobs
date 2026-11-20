@@ -337,6 +337,12 @@ timers cannot give a multi-instance deployment.
   `sample/*/package.json` `@nest-native/jobs` pin to the exact version, run
   `npm install`, and `npm run release:check`. Publish via a `vX.Y.Z` tag →
   `release.yml` (provenance + the `NPM_TOKEN` secret).
+- After publishing, `release.yml` waits until the registry serves the new
+  version, then runs `npm run release:check:published`. The published check
+  and the packed one (`release:check:consumer`) run the same consumer smoke,
+  from `scripts/consumer-smoke.mjs`, so the check that runs only after a
+  release cannot drift from the one CI runs on every pull request. Change the
+  smoke there, never in either check script.
 
 ## Local Full-Mode Verification (optional infra + mutation testing)
 
